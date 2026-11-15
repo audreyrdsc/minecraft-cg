@@ -88,6 +88,26 @@
 
 #define PI 3.14159265f
 
+/* Modos didáticos opcionais para a demonstração da Semana 10.
+   Sem nenhuma flag, o projeto mantém o comportamento original. */
+#ifndef DEMO_UI_MATRIX_ONLY   //Simula uma interface de usuário mínima, só com a matriz de blocos
+#define DEMO_UI_MATRIX_ONLY 0 //Guarda apenas a matriz de projeção
+#endif
+
+#ifndef DEMO_UI_FIXED_BAR   //Simula uma interface de usuário mínima, só com a barra fixa de itens
+#define DEMO_UI_FIXED_BAR 0 //A barra sai do centro ao redimensionar a janela
+#endif
+
+#ifndef DEMO_UI_RAW_MOUSE_Y   //Simula a necessidade de considerar o espelhamento do mouse
+#define DEMO_UI_RAW_MOUSE_Y 0 //A GLUT fornece a posição do mouse com origem no canto superior esquerdo
+#endif                        //A interface OpenGL foi configurada com origem no canto inferior esquerdo
+
+#ifndef DEMO_UI_PAUSE_CLOCK   //Simula o arremesso do personagem na pausa segurando botão de movimento
+#define DEMO_UI_PAUSE_CLOCK 0 //O relógio do jogo continua contando mesmo pausado, precisa reiniciar
+#endif
+
+#define DEMO_UI_FIXED_BAR_X 215.0f
+
 /* ------------------------------------------------------------------ */
 /* Tipos de bloco                                                     */
 /* Cada tipo é só um número com nome. O número não muda a forma do    */
@@ -1803,6 +1823,17 @@ float amplitudeCaminhada = 0.0f; /* 0 parado, 1 andando; suaviza o balanço */
 void atualiza(void)
 {
     int agora = glutGet(GLUT_ELAPSED_TIME);
+#if DEMO_UI_PAUSE_CLOCK
+    /* No modo didático, o relógio fica congelado enquanto o jogo está
+       pausado. Ao retornar, dt inclui toda a duração da pausa. */
+    if (estadoJogo != ESTADO_JOGANDO) {
+        glutPostRedisplay();
+        return;
+    }
+
+    float dt = (agora - ultimoTempo) / 1000.0f;
+    ultimoTempo = agora;
+#else
     float dt = (agora - ultimoTempo) / 1000.0f;
     ultimoTempo = agora;
     if (dt > DT_MAXIMO) dt = DT_MAXIMO;
@@ -1811,6 +1842,7 @@ void atualiza(void)
         glutPostRedisplay();
         return;
     }
+#endif
 
     float passo = VELOCIDADE * dt;
     float giro  = VELOCIDADE_GIRO * dt;
@@ -1889,9 +1921,17 @@ void abreMenu(void)
 
 void fechaMenu(void)
 {
+    EstadoJogo estadoAnterior = estadoJogo;
     estadoJogo = ESTADO_JOGANDO;
     capturaCursor();
+#if DEMO_UI_PAUSE_CLOCK
+    /* O menu principal não deve gerar um arremesso ao iniciar. O defeito
+       demonstrado vale somente para o retorno de uma pausa. */
+    if (estadoAnterior != ESTADO_PAUSADO)
+        ultimoTempo = glutGet(GLUT_ELAPSED_TIME);
+#else
     ultimoTempo = glutGet(GLUT_ELAPSED_TIME);
+#endif
 }
 
 void alternaMenu(void)
@@ -1976,8 +2016,13 @@ void iniciaInterface(void)
        suficiente para os mini-cubos da barra usarem o Z-buffer. */
     glOrtho(0, larguraJanela, 0, alturaJanela, -200.0, 200.0);
     glMatrixMode(GL_MODELVIEW);
+#if DEMO_UI_MATRIX_ONLY
+    /* Defeito intencional para a demonstração: a matriz de modelo e visão
+       continua contendo o gluLookAt da câmera. */
+#else
     glPushMatrix();
     glLoadIdentity();
+#endif
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -1993,7 +2038,11 @@ void terminaInterface(void)
     glEnable(GL_TEXTURE_2D);
     glEnable(GL_CULL_FACE);
     glEnable(GL_DEPTH_TEST);
+#if DEMO_UI_MATRIX_ONLY
+    /* A matriz MODELVIEW não foi empilhada neste modo didático. */
+#else
     glPopMatrix();
+#endif
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
@@ -2052,7 +2101,9 @@ static int pontoNoBotao(int x, int y, int indice)
 {
     float x0, y0, x1, y1;
     limitesBotao(indice, &x0, &y0, &x1, &y1);
+#if !DEMO_UI_RAW_MOUSE_Y
     y = alturaJanela - y;
+#endif
     return x >= x0 && x <= x1 && y >= y0 && y <= y1;
 }
 
@@ -2119,7 +2170,12 @@ static void desenhaBarraItens(void)
 {
     float lado = 58.0f, espaco = 6.0f;
     float largura = NUM_ITENS * lado + (NUM_ITENS - 1) * espaco + 24.0f;
+#if DEMO_UI_FIXED_BAR
+    /* Defeito intencional: a barra fica presa à posição da janela inicial. */
+    float x0 = DEMO_UI_FIXED_BAR_X;
+#else
     float x0 = (larguraJanela - largura) / 2.0f;
+#endif
     float y0 = 18.0f;
     int i;
 

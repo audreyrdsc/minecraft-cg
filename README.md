@@ -15,7 +15,7 @@ O código inteiro está em um único arquivo, [`mine.c`](mine.c), comentado para
 | COLISÃO | Posição do personagem e colisão com o mundo |
 | CÂMERA | Projeção, direção do olhar, primeira e terceira pessoa, desenho do personagem |
 | ENTRADA | Teclado, mouse, roda e atualização do movimento |
-| INTERFACE | Menu principal, pausa, mira, barra de itens e informações em tela |
+| INTERFACE | Menu principal, pausa, instruções, mira, barra de itens e informações em tela |
 | QUADRO E PROGRAMA PRINCIPAL | Desenho do quadro, FPS e `main` |
 
 As funções centrais têm um comentário antes delas explicando o que fazem e por quê.
@@ -33,7 +33,8 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 - Um menu principal com os botões Jogar e Sair.
 - Um menu de pausa (ESC) com os botões Continuar, Instruções e Sair.
 - Uma mira fixa no centro, barra de nove itens com miniaturas tridimensionais dos blocos, quantidades e item selecionado.
-- Informações de FPS e posição do personagem no canto superior.
+- Informações de FPS e posição do personagem no canto superior, sem alterar o título da janela.
+- Uma tela de instruções acessível pelo menu de pausa, com retorno por ESC, Enter ou Espaço.
 
 Tudo é feito com **um único cubo de lado 1**, desenhado várias vezes em posições diferentes. Os blocos do terreno são texturizados com um atlas pixelado; a água e o vidro são semitransparentes. Não há iluminação: cada face recebe um brilho fixo (topo claro, laterais médias, base escura), multiplicado pela textura, o que dá a impressão de volume. As nuvens e o personagem continuam com cor sólida.
 
@@ -41,13 +42,13 @@ Tudo é feito com **um único cubo de lado 1**, desenhado várias vezes em posi�
 
 | Semana | Conteúdo | Onde aparece no código |
 |---|---|---|
-| 1 | Janela, laço principal, tempo de quadro, FPS no título, ESC | `main`, `desenha`, `atualiza` |
+| 1 | Janela, laço principal, tempo de quadro, FPS em tela, ESC | `main`, `desenha`, `atualiza` |
 | 2 | Primitivas (`GL_QUADS`) e cor por face | `desenhaBloco`, `corDaFace` |
 | 3 | Cubo 3D, buffer de profundidade, descarte de faces, instâncias com `glPushMatrix`/`glPopMatrix` | `desenhaBloco`, `blocoEm` |
 | 4 | Perspectiva, correção de proporção, câmera com `gluLookAt`, navegação pelo teclado | `aplicaProjecao`, `redimensiona`, `posicionaCamera` |
 | 5 | Teclado por estado e tempo de quadro; mouse com yaw e pitch e captura do cursor; matriz do mundo e colisão por caixa alinhada aos eixos; primeira e terceira pessoa; zoom pela roda | `teclado`, `tecladoSolto`, `atualiza`, `mundo`, `posicaoLivre`, `moveJogador`, `direcaoDoOlhar`, `movimentoMouse`, `posicionaCamera`, `desenhaJogador`, `rodaMouse` |
 | Texturas e transparência | Atlas lido de um PPM e enviado com `glTexImage2D`; células por face e `glTexCoord2f`; filtro `GL_NEAREST` (visual pixelado) e `GL_MODULATE`; alfa por cor-chave; recorte com `GL_ALPHA_TEST` nas folhas; mistura com `GL_BLEND` e `glDepthMask` no vidro e na água, em três passadas, com os semitransparentes ordenados; faces ocultas por vizinho opaco | `lerPPM`, `converteRGBA`, `carregaAtlas`, `celulaDaFace`, `coordenadasDaCelula`, `desenhaBloco`, `faceVisivel`, `facesVisiveis`, `desenhaOpacos`, `listaTransparentes`, `desenhaTransparentes`, `casinhaEm` |
-| Interface e estados | Passada 2D com as duas matrizes salvas; projeção em pixels; menu principal, jogo e pausa; cursor visível nos menus e capturado no jogo; mira, barra de nove itens, seleção numérica/roda, FPS e posição | `iniciaInterface`, `terminaInterface`, `desenhaInterface`, `movimentoInterface`, `estadoJogo`, `botaoSelecionado` |
+| Interface e estados | Passada 2D com as duas matrizes salvas; projeção em pixels; menu principal, jogo, pausa e instruções; cursor visível nos menus e capturado no jogo; botões com hover e clique; mira, barra de nove itens com miniaturas 3D, quantidades, seleção numérica/roda, FPS e posição | `iniciaInterface`, `terminaInterface`, `desenhaInterface`, `desenhaInstrucoes`, `movimentoInterface`, `cliqueMouse`, `estadoJogo`, `botaoSelecionado` |
 
 ## Dependências
 
@@ -91,6 +92,21 @@ clang mine.c -o mine -framework OpenGL -framework GLUT -framework ApplicationSer
 ```
 
 Rode o jogo **de dentro da pasta do projeto**: ele lê o `atlas.ppm` da pasta atual e, se não achar o arquivo, avisa no terminal e fecha.
+
+### Linux/macOS
+
+Use as mesmas macros e substitua o comando de compilação pelas bibliotecas da
+plataforma:
+
+```sh
+gcc mine.c -DDEMO_UI_MATRIX_ONLY=1 -o demonstracao/mine-matriz -lGLEW -lGL -lGLU -lglut -lm
+gcc mine.c -DDEMO_UI_FIXED_BAR=1 -o demonstracao/mine-barra -lGLEW -lGL -lGLU -lglut -lm
+gcc mine.c -DDEMO_UI_RAW_MOUSE_Y=1 -o demonstracao/mine-mouse -lGLEW -lGL -lGLU -lglut -lm
+gcc mine.c -DDEMO_UI_PAUSE_CLOCK=1 -o demonstracao/mine-pausa -lGLEW -lGL -lGLU -lglut -lm
+```
+
+Depois, execute o binário correspondente em `demonstracao/`. Para mostrar a
+versão correta, compile sem nenhuma das quatro macros.
 
 ## Atlas de texturas
 
@@ -136,7 +152,7 @@ O formato PPM (`P6`) não tem canal alfa. Na leitura, o jogo transforma o magent
 
 A coluna "Leitura" diz como cada entrada é tratada: ações contínuas, que duram enquanto a tecla está pressionada, são lidas **por estado** a cada quadro; ações discretas, que acontecem uma vez por toque, são tratadas **por evento**.
 
-O jogo começa no menu principal. Ao clicar em Jogar, o personagem aparece no gramado, olhando para a montanha, com a câmera em terceira pessoa. Não há gravidade: para subir um degrau, use Espaço ou ↑. Durante o jogo, o mouse controla o olhar; Tab libera o cursor, e Tab ou um clique na janela o capturam de novo.
+O jogo começa no menu principal, com o cursor livre. Ao clicar em Jogar, o personagem aparece no gramado, olhando para a montanha, com a câmera em terceira pessoa e o cursor capturado. Não há gravidade: para subir um degrau, use Espaço ou ↑. Durante o jogo, o mouse controla o olhar; Tab libera o cursor, e Tab ou um clique na janela o capturam de novo. ESC abre a pausa, que congela a atualização do jogo; nela, **INSTRUÇÕES** mostra todos os comandos e **CONTINUAR** retoma a partida.
 
 ## Como o cenário é montado
 
@@ -195,3 +211,37 @@ A matriz é o que permite a colisão: a célula que contém um ponto `(px, py, p
 - **Outra nuvem**: acrescente `nuvemEm(x, z, largura, fundo);` em `construirMundo`.
 - **Um tipo de bloco novo**: crie um `#define` (por exemplo, `#define MADEIRA 20`; de 10 a 16 são as cores do personagem e 17 é o vidro), desenhe a célula no `atlas.ppm` (há 5 livres) e acrescente o `case` em `celulaDaFace`. Para cor sólida, sem textura, o `case` vai em `corDaFace`.
 - **Quebrar um bloco**: `colocaBloco(VAZIO, x, y, z)` depois de `construirMundo`; o desenho e a colisão passam a ver o buraco.
+
+
+## Demonstrações dos erros da Semana 10
+
+As quatro demonstrações são modos temporários de compilação. Sem nenhuma macro, o código permanece na versão correta. Execute os comandos a partir da pasta do projeto, onde está o `atlas.ppm`.
+
+### Windows MinGW
+
+```powershell
+# 1. Guardar somente GL_PROJECTION: a mira acompanha a câmera
+gcc mine.c -DDEMO_UI_MATRIX_ONLY=1 -o demonstracao\mine-matriz.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+.\demonstracao\mine-matriz.exe
+
+# 2. Barra em posição fixa: ela sai do centro ao redimensionar
+gcc mine.c -DDEMO_UI_FIXED_BAR=1 -o demonstracao\mine-barra.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+.\demonstracao\mine-barra.exe
+
+# 3. Mouse sem converter a altura: clique e hover ficam espelhados
+gcc mine.c -DDEMO_UI_RAW_MOUSE_Y=1 -o demonstracao\mine-mouse.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+.\demonstracao\mine-mouse.exe
+
+# 4. Pausa sem reiniciar o tempo: o personagem avança de uma vez ao voltar
+gcc mine.c -DDEMO_UI_PAUSE_CLOCK=1 -o demonstracao\mine-pausa.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+.\demonstracao\mine-pausa.exe
+```
+
+**Para a primeira demonstração**, clique em **JOGAR**, alterne para primeira pessoa com `V` ou `F5` e gire a câmera. A mira deverá sair do centro.
+
+**Para a segunda**, clique em **JOGAR** e redimensione a janela para uma largura maior e depois menor. A barra permanecerá na posição inicial.
+
+**Para a terceira**, permaneça no menu, mova o cursor sobre **JOGAR** e tente clicar. O destaque e o clique serão avaliados na posição verticalmente espelhada; clique nessa posição para revelar o erro.
+
+**Para a quarta**, durante o jogo mantenha `W` pressionado, pressione `ESC`,
+aguarde alguns segundos e pressione `ESC` novamente sem soltar `W`. O personagem avançará de uma só vez porque o tempo da pausa foi usado como um único quadro. O relógio é reiniciado normalmente ao sair do menu principal; o defeito é demonstrado somente no retorno da pausa.
