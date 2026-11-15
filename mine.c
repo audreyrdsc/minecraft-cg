@@ -266,6 +266,7 @@ extern GLuint atlas;                /* objeto de textura do atlas */
 unsigned char *lerPPM(const char *nome, int *l, int *a);
 unsigned char *converteRGBA(const unsigned char *rgb, int l, int a);
 void carregaAtlas(void);
+void carregaTexturasUI(void);
 
 /* 2. célula do atlas de cada face */
 int  celulaDaFace(int tipo, int face);
@@ -517,6 +518,16 @@ unsigned char *converteRGBA(const unsigned char *rgb, int l, int a)
 
 GLuint atlas;
 
+typedef struct {
+    GLuint id;
+    int largura;
+    int altura;
+} TexturaUI;
+
+TexturaUI texturaLogo;
+TexturaUI texturaSubtitulo;
+TexturaUI texturaVersao;
+
 void carregaAtlas(void)
 {
     int l, a;
@@ -540,6 +551,65 @@ void carregaAtlas(void)
 
     free(rgb);                              /* a placa de vídeo já tem a cópia */
     free(rgba);
+}
+
+/* ------------------------------------------------------------------ */
+/* Texturas da interface                                              */
+/* As imagens do menu ficam fora do atlas: são faixas largas, não     */
+/* células 16 x 16 de blocos. O mesmo leitor PPM é reutilizado, mas   */
+/* o preto do fundo dessas imagens vira alfa zero.                    */
+/* ------------------------------------------------------------------ */
+
+static unsigned char *converteUIRGBA(const unsigned char *rgb, int l, int a)
+{
+    unsigned char *rgba = malloc(4 * l * a);
+    int i;
+
+    if (rgba == NULL) return NULL;
+    for (i = 0; i < l * a; i++) {
+        unsigned char r = rgb[3*i], g = rgb[3*i+1], b = rgb[3*i+2];
+        rgba[4*i] = r;
+        rgba[4*i+1] = g;
+        rgba[4*i+2] = b;
+        rgba[4*i+3] = (r == 0 && g == 0 && b == 0) ? 0 : 255;
+    }
+    return rgba;
+}
+
+static TexturaUI carregaUmaTexturaUI(const char *nome)
+{
+    TexturaUI resultado = { 0, 0, 0 };
+    unsigned char *rgb, *rgba;
+
+    rgb = lerPPM(nome, &resultado.largura, &resultado.altura);
+    if (rgb == NULL) {
+        printf("Erro: não consegui ler %s\n", nome);
+        exit(1);
+    }
+    rgba = converteUIRGBA(rgb, resultado.largura, resultado.altura);
+    free(rgb);
+    if (rgba == NULL) {
+        printf("Erro: memória insuficiente para %s\n", nome);
+        exit(1);
+    }
+
+    glGenTextures(1, &resultado.id);
+    glBindTexture(GL_TEXTURE_2D, resultado.id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                 resultado.largura, resultado.altura, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    free(rgba);
+    return resultado;
+}
+
+void carregaTexturasUI(void)
+{
+    texturaLogo = carregaUmaTexturaUI("assets/ui/ui_logo.ppm");
+    texturaSubtitulo = carregaUmaTexturaUI("assets/ui/ui_subtitulo.ppm");
+    texturaVersao = carregaUmaTexturaUI("assets/ui/ui_versao.ppm");
 }
 
 /* ------------------------------------------------------------------ */
@@ -2054,6 +2124,65 @@ static void desenhaTextoCentralizado(void *fonte, float x, float y,
     escreve(fonte, x - larguraTexto(fonte, texto) / 2.0f, y, texto);
 }
 
+static void desenhaImagemUI(const TexturaUI *imagem,
+                            float x, float y, float largura, float altura)
+{
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, imagem->id);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+    glBegin(GL_QUADS);
+    /* O PPM é lido de cima para baixo; as coordenadas verticais são
+       invertidas para a imagem aparecer na orientação original. */
+    glTexCoord2f(0.0f, 1.0f); glVertex2f(x, y);
+    glTexCoord2f(1.0f, 1.0f); glVertex2f(x + largura, y);
+    glTexCoord2f(1.0f, 0.0f); glVertex2f(x + largura, y + altura);
+    glTexCoord2f(0.0f, 0.0f); glVertex2f(x, y + altura);
+    glEnd();
+
+    glDisable(GL_BLEND);
+    glDisable(GL_TEXTURE_2D);
+}
+
+static float larguraLimitada(float larguraOriginal, float larguraMaxima,
+                             float margem)
+{
+    float disponivel = larguraJanela - 2.0f * margem;
+    if (disponivel < 1.0f) disponivel = 1.0f;
+    return larguraOriginal < larguraMaxima
+        ? (larguraOriginal < disponivel ? larguraOriginal : disponivel)
+        : (larguraMaxima < disponivel ? larguraMaxima : disponivel);
+}
+
+static void desenhaIdentidadeMenuPrincipal(void)
+{
+    float larguraLogo = larguraLimitada((float)texturaLogo.largura,
+                                         760.0f, 40.0f);
+    float alturaLogo = larguraLogo * texturaLogo.altura / texturaLogo.largura;
+    float xLogo = (larguraJanela - larguraLogo) / 2.0f;
+    float yLogo = alturaJanela - 28.0f - alturaLogo;
+
+    float larguraSubtitulo = larguraLimitada((float)texturaSubtitulo.largura,
+                                              380.0f, 40.0f);
+    float alturaSubtitulo = larguraSubtitulo * texturaSubtitulo.altura /
+                            texturaSubtitulo.largura;
+    float xSubtitulo = (larguraJanela - larguraSubtitulo) / 2.0f;
+    float ySubtitulo = yLogo - 18.0f - alturaSubtitulo;
+
+    float larguraVersao = larguraLimitada((float)texturaVersao.largura,
+                                           300.0f, 20.0f);
+    float alturaVersao = larguraVersao * texturaVersao.altura /
+                         texturaVersao.largura;
+
+    desenhaImagemUI(&texturaLogo, xLogo, yLogo, larguraLogo, alturaLogo);
+    desenhaImagemUI(&texturaSubtitulo, xSubtitulo, ySubtitulo,
+                    larguraSubtitulo, alturaSubtitulo);
+    desenhaImagemUI(&texturaVersao, 20.0f, 20.0f,
+                    larguraVersao, alturaVersao);
+}
+
 static int numeroBotoesTela(void)
 {
     if (estadoJogo == ESTADO_MENU_PRINCIPAL) return 2;
@@ -2301,10 +2430,13 @@ void desenhaInterface(void)
         return;
     }
 
-    glColor3f(1.0f, 0.86f, 0.30f);
-    desenhaTextoCentralizado(FONTE_TITULO, larguraJanela / 2.0f,
-                             alturaJanela * 0.72f,
-                             estadoJogo == ESTADO_MENU_PRINCIPAL ? "MINECRAFT CG" : "PAUSADO");
+    if (estadoJogo == ESTADO_MENU_PRINCIPAL) {
+        desenhaIdentidadeMenuPrincipal();
+    } else {
+        glColor3f(1.0f, 0.86f, 0.30f);
+        desenhaTextoCentralizado(FONTE_TITULO, larguraJanela / 2.0f,
+                                 alturaJanela * 0.72f, "PAUSADO");
+    }
     desenhaBotao(0, estadoJogo == ESTADO_MENU_PRINCIPAL ? "JOGAR" : "CONTINUAR");
     if (estadoJogo == ESTADO_MENU_PRINCIPAL) {
         desenhaBotao(1, "SAIR");
@@ -2400,6 +2532,7 @@ int main(int argc, char **argv)
     printf("OpenGL %s | %s\n", glGetString(GL_VERSION), glGetString(GL_RENDERER));
 
     carregaAtlas();                         /* lê o atlas e liga a textura */
+    carregaTexturasUI();                    /* lê os elementos gráficos do menu */
 
     /* as teclas são lidas por estado: a repetição automática do sistema
        operacional não acrescenta nada e é desligada */
