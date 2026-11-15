@@ -163,7 +163,6 @@
 #define CEL_AREIA       9
 #define CEL_NEVE        10
 #define SEM_TEXTURA     (-1)    /* nuvem e personagem: cor sólida */
-
 /* As 6 faces de um bloco, uma por bit, para dizer quais desenhar:
    FACE_TOPO | FACE_BASE são só o topo e a base */
 #define FACE_FRENTE   1         /* z = 1 */
@@ -283,6 +282,14 @@ void posicaoDoOlho(float *x, float *y, float *z);
 /* tipo de cada bloco, indexado como mundo[x][y][z] (ver MUNDO) */
 extern unsigned char mundo[LADO][ALTURA_MUNDO][LADO];
 
+/* Barra de itens da Semana 10. Os nove tipos representam os blocos
+   utilizáveis; as quantidades são inicializadas a partir do mundo atual,
+   já que esta versão ainda não tinha os contadores da Semana 9. */
+#define NUM_ITENS 9
+extern const int tiposItens[NUM_ITENS];
+extern int quantidadesItens[NUM_ITENS];
+extern int itemSelecionado;
+
 /* desenho de um bloco */
 void corDaFace(int tipo, float brilho, float tom);
 void desenhaBloco(int tipo, float tom, int faces);  /* cubo de lado 1 na origem */
@@ -357,17 +364,27 @@ void rodaMouse(int roda, int direcao, int x, int y);
 /* atualização */
 void atualiza(void);
 
-/*
- * Menu de pausa, aberto e fechado com ESC, com as instruções de
- * movimentação. Enquanto ele está aberto o jogo fica parado e o cursor
- * fica livre.
- */
-extern int menuAberto;              /* 1 enquanto o menu está na tela */
+/* Interface e estados do jogo. */
+typedef enum {
+    ESTADO_MENU_PRINCIPAL,
+    ESTADO_JOGANDO,
+    ESTADO_PAUSADO,
+    ESTADO_INSTRUCOES
+} EstadoJogo;
 
+extern EstadoJogo estadoJogo;
+extern int botaoSelecionado;
+
+void iniciaInterface(void);
+void terminaInterface(void);
 void abreMenu(void);
 void fechaMenu(void);
 void alternaMenu(void);
-void desenhaMenu(void);             /* chamada por desenha(), depois da cena */
+void desenhaInterface(void);
+void movimentoInterface(int x, int y);
+static int numeroBotoesTela(void);
+static void acionaBotaoTela(int indice);
+static int pontoNoBotao(int x, int y, int indice);
 
 
 /* ================================================================== */
@@ -459,6 +476,7 @@ unsigned char *converteRGBA(const unsigned char *rgb, int l, int a)
         }
         else if (celula == CEL_VIDRO) rgba[4*i+3] = ALFA_VIDRO;
         else if (celula == CEL_AGUA)  rgba[4*i+3] = ALFA_AGUA;
+
     }
     return rgba;
 }
@@ -1160,6 +1178,25 @@ void construirMundo(void)
     nuvemEm(10, 0, 4, 2);                   /* sobre a árvore, mais ao fundo */
 }
 
+const int tiposItens[NUM_ITENS] = {
+    GRAMA, TERRA, PEDRA, TRONCO, FOLHA, AREIA, AGUA, NEVE, VIDRO
+};
+int quantidadesItens[NUM_ITENS] = { 0 };
+int itemSelecionado = 0;
+
+static void contaItensDoMundo(void)
+{
+    int i, x, y, z;
+
+    for (i = 0; i < NUM_ITENS; i++) quantidadesItens[i] = 0;
+    for (x = 0; x < LADO; x++)
+        for (y = 0; y < ALTURA_MUNDO; y++)
+            for (z = 0; z < LADO; z++)
+                for (i = 0; i < NUM_ITENS; i++)
+                    if (mundo[x][y][z] == tiposItens[i])
+                        quantidadesItens[i]++;
+}
+
 
 /* ================================================================== */
 /* COLISÃO                                                            */
@@ -1508,14 +1545,48 @@ void teclado(unsigned char tecla, int x, int y)
 
     teclas[tolower(tecla)] = 1;             /* estado: para as ações contínuas */
 
-    if (menuAberto) {                       /* com o menu, só duas teclas valem */
-        if (tecla == 27) fechaMenu();       /* 27 é o código da tecla ESC */
+    if (estadoJogo == ESTADO_MENU_PRINCIPAL) {
+        if (tecla == 27 || tolower(tecla) == 'q') exit(0);
+        if (tecla == 9) {
+            botaoSelecionado = (botaoSelecionado + 1) % 2;
+        } else if (tecla == 13 || tecla == ' ') {
+            if (botaoSelecionado == 0) fechaMenu();
+            else exit(0);
+        }
+        glutPostRedisplay();
+        return;
+    }
+
+    if (estadoJogo == ESTADO_PAUSADO) {
+        if (tecla == 27) fechaMenu();
         else if (tolower(tecla) == 'q') exit(0);
+        else if (tecla == 9) botaoSelecionado = (botaoSelecionado + 1) % 3;
+        else if (tecla == 13 || tecla == ' ') {
+            if (botaoSelecionado == 0) fechaMenu();
+            else if (botaoSelecionado == 1) estadoJogo = ESTADO_INSTRUCOES;
+            else exit(0);
+        }
+        glutPostRedisplay();
+        return;
+    }
+
+    if (estadoJogo == ESTADO_INSTRUCOES) {
+        if (tecla == 27 || tecla == 13 || tecla == ' ') {
+            estadoJogo = ESTADO_PAUSADO;
+            botaoSelecionado = 0;
+        } else if (tolower(tecla) == 'q') {
+            exit(0);
+        }
+        glutPostRedisplay();
         return;
     }
 
     switch (tolower(tecla)) {               /* evento: para as ações discretas */
         case 27:  abreMenu(); break;        /* ESC: menu de pausa */
+        case '1': case '2': case '3': case '4': case '5':
+        case '6': case '7': case '8': case '9':
+            itemSelecionado = tolower(tecla) - '1';
+            break;
         case 9:   alternaCaptura(); break;  /* 9 é o código da tecla Tab */
         case 'p':
             projecaoOrtogonal = !projecaoOrtogonal;
@@ -1542,7 +1613,7 @@ void especial(int tecla, int x, int y)
 
     if (tecla >= 0 && tecla < 256) especiais[tecla] = 1;
 
-    if (tecla == GLUT_KEY_F5 && !menuAberto)               /* evento: alterna a câmera */
+    if (tecla == GLUT_KEY_F5 && estadoJogo == ESTADO_JOGANDO)
         modoCamera = (modoCamera == PRIMEIRA_PESSOA) ? TERCEIRA_PESSOA
                                                      : PRIMEIRA_PESSOA;
 }
@@ -1582,6 +1653,11 @@ void movimentoMouse(int x, int y)
 {
     int cx = larguraJanela / 2, cy = alturaJanela / 2;
     int dx = x - cx, dy = y - cy;
+
+    if (estadoJogo != ESTADO_JOGANDO) {
+        movimentoInterface(x, y);
+        return;
+    }
 
     if (!cursorCapturado) return;
 
@@ -1651,9 +1727,27 @@ void alternaCaptura(void)
 /* Clique com o cursor liberado: captura de novo */
 void cliqueMouse(int botao, int estado, int x, int y)
 {
-    (void)botao; (void)x; (void)y;
-    if (estado == GLUT_DOWN && !cursorCapturado && !menuAberto)
-        capturaCursor();
+    if (estado != GLUT_DOWN) return;
+
+    if (estadoJogo == ESTADO_MENU_PRINCIPAL ||
+        estadoJogo == ESTADO_PAUSADO ||
+        estadoJogo == ESTADO_INSTRUCOES) {
+        if (botao == GLUT_LEFT_BUTTON) {
+            int i;
+
+            for (i = 0; i < numeroBotoesTela(); i++) {
+                if (pontoNoBotao(x, y, i)) {
+                    botaoSelecionado = i;
+                    acionaBotaoTela(i);
+                    return;
+                }
+            }
+        }
+        return;
+    }
+
+    (void)x; (void)y;
+    if (!cursorCapturado) capturaCursor();
 }
 
 /* O cursor entrou na janela (por exemplo, depois de trocar de janela
@@ -1684,8 +1778,9 @@ void mudaZoom(int direcao)
 void rodaMouse(int roda, int direcao, int x, int y)
 {
     (void)roda; (void)x; (void)y;
-    if (!menuAberto)
-        mudaZoom(direcao);                  /* roda para cima aproxima */
+    if (estadoJogo == ESTADO_JOGANDO)
+        itemSelecionado = (itemSelecionado + (direcao > 0 ? 1 : NUM_ITENS - 1)) % NUM_ITENS;
+    glutPostRedisplay();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1712,9 +1807,9 @@ void atualiza(void)
     ultimoTempo = agora;
     if (dt > DT_MAXIMO) dt = DT_MAXIMO;
 
-    if (menuAberto) {                       /* pausa: o relógio continua sendo */
-        glutPostRedisplay();                /* lido, para o primeiro dt depois */
-        return;                             /* de fechar não ser enorme */
+    if (estadoJogo != ESTADO_JOGANDO) {
+        glutPostRedisplay();
+        return;
     }
 
     float passo = VELOCIDADE * dt;
@@ -1779,27 +1874,30 @@ void atualiza(void)
 /* ================================================================== */
 
 
-int menuAberto = 0;
+EstadoJogo estadoJogo = ESTADO_MENU_PRINCIPAL;
+int botaoSelecionado = 0;
+int fpsExibido = 0;
 
-/* Abrir pausa o jogo (atualiza() deixa de mover o personagem) e libera
-   o cursor, para o usuário poder usar o mouse fora do jogo. Fechar
-   captura o cursor de novo. */
 void abreMenu(void)
 {
-    menuAberto = 1;
-    liberaCursor();
+    if (estadoJogo == ESTADO_JOGANDO) {
+        estadoJogo = ESTADO_PAUSADO;
+        botaoSelecionado = 0;
+        liberaCursor();
+    }
 }
 
 void fechaMenu(void)
 {
-    menuAberto = 0;
+    estadoJogo = ESTADO_JOGANDO;
     capturaCursor();
+    ultimoTempo = glutGet(GLUT_ELAPSED_TIME);
 }
 
 void alternaMenu(void)
 {
-    if (menuAberto) fechaMenu();
-    else            abreMenu();
+    if (estadoJogo == ESTADO_JOGANDO) abreMenu();
+    else if (estadoJogo == ESTADO_PAUSADO) fechaMenu();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1865,101 +1963,305 @@ static void retangulo(float x0, float y0, float x1, float y1)
 }
 
 /* ------------------------------------------------------------------ */
-/* Menu: desenhado por cima da cena numa segunda passada, em 2D.      */
-/* Projeção ortográfica em pixels (gluOrtho2D), modelo-visualização   */
-/* identidade e teste de profundidade desligado, para o painel não    */
-/* ficar atrás dos blocos. A cena é escurecida com transparência      */
-/* (alfa 0.5). As matrizes 3D são guardadas e devolvidas no fim. A    */
-/* cor do texto vale a partir do glRasterPos, por isso glColor vem    */
-/* antes.                                                             */
+/* Interface 2D: esta e a unica passada que usa coordenadas em pixels. */
+/* As duas matrizes sao guardadas para a camera 3D nao deslocar a UI.  */
 /* ------------------------------------------------------------------ */
 
-static const char *instrucoes[][2] = {
-    { "W / S",                    "andar para frente / para trás" },
-    { "A / D",                    "andar para a esquerda / para a direita" },
-    { "R (segurando)",            "correr" },
-    { "Espaço ou seta para cima", "subir" },
-    { "Shift ou seta para baixo", "descer" },
-    { "Setas esquerda / direita", "girar o olhar" },
-    { "Mouse",                    "olhar ao redor" },
-};
-
-#define NUM_INSTRUCOES (int)(sizeof(instrucoes) / sizeof(instrucoes[0]))
-#define ALTURA_LINHA 30
-#define MARGEM       40
-#define ESPACO_COLUNAS 40
-
-void desenhaMenu(void)
+void iniciaInterface(void)
 {
-    const char *titulo = "Controles";
-    const char *rodape = "ESC volta ao jogo     Q sai do jogo";
-    int larguraChaves = 0, larguraAcoes = 0, i;
-
-    /* 1. configuração 2D, guardando a 3D */
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
-    gluOrtho2D(0, larguraJanela, 0, alturaJanela);
+    /* Mantem uma unidade em x/y igual a um pixel, mas deixa profundidade
+       suficiente para os mini-cubos da barra usarem o Z-buffer. */
+    glOrtho(0, larguraJanela, 0, alturaJanela, -200.0, 200.0);
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
     glLoadIdentity();
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
-    glDisable(GL_TEXTURE_2D);               /* painel e texto em cor sólida */
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_FOG);
+    glDisable(GL_TEXTURE_2D);
+}
 
-    /* 2. escurece a cena */
-    glColor4f(0.0f, 0.0f, 0.0f, 0.5f);
-    retangulo(0, 0, larguraJanela, alturaJanela);
-
-    /* 3. tamanho e posição do painel, a partir do texto */
-    for (i = 0; i < NUM_INSTRUCOES; i++) {
-        int lc = larguraTexto(FONTE, instrucoes[i][0]);
-        int la = larguraTexto(FONTE, instrucoes[i][1]);
-        if (lc > larguraChaves) larguraChaves = lc;
-        if (la > larguraAcoes)  larguraAcoes  = la;
-    }
-
-    float larguraPainel = larguraChaves + ESPACO_COLUNAS + larguraAcoes + 2 * MARGEM;
-    float alturaPainel  = (NUM_INSTRUCOES + 4) * ALTURA_LINHA + 2 * MARGEM;
-    float esquerda = (larguraJanela - larguraPainel) / 2.0f;
-    float topo     = (alturaJanela + alturaPainel) / 2.0f;
-
-    glColor4f(0.08f, 0.08f, 0.12f, 0.85f);
-    retangulo(esquerda, topo - alturaPainel, esquerda + larguraPainel, topo);
-
+void terminaInterface(void)
+{
     glDisable(GL_BLEND);
-
-    /* 4. texto: a cor vem antes do glRasterPos (feito em escreve) */
-    float y = topo - MARGEM - 20;
-    glColor3f(1.0f, 1.0f, 1.0f);
-    escreve(FONTE_TITULO,
-            (larguraJanela - larguraTexto(FONTE_TITULO, titulo)) / 2.0f, y, titulo);
-
-    y -= 2 * ALTURA_LINHA;
-    for (i = 0; i < NUM_INSTRUCOES; i++) {
-        glColor3f(1.0f, 0.85f, 0.35f);                  /* tecla: amarelo */
-        escreve(FONTE, esquerda + MARGEM, y, instrucoes[i][0]);
-        glColor3f(0.92f, 0.92f, 0.92f);                 /* ação: branco */
-        escreve(FONTE, esquerda + MARGEM + larguraChaves + ESPACO_COLUNAS, y,
-                instrucoes[i][1]);
-        y -= ALTURA_LINHA;
-    }
-
-    y -= ALTURA_LINHA;
-    glColor3f(0.65f, 0.65f, 0.70f);
-    escreve(FONTE, (larguraJanela - larguraTexto(FONTE, rodape)) / 2.0f, y, rodape);
-
-    /* 5. devolve a configuração 3D */
+    glDepthMask(GL_TRUE);
+    glEnable(GL_TEXTURE_2D);
     glEnable(GL_CULL_FACE);
     glEnable(GL_DEPTH_TEST);
-    glEnable(GL_TEXTURE_2D);
-    glPopMatrix();                                      /* modelo-visualização */
+    glPopMatrix();
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
+}
+
+static void desenhaTextoCentralizado(void *fonte, float x, float y,
+                                     const char *texto)
+{
+    escreve(fonte, x - larguraTexto(fonte, texto) / 2.0f, y, texto);
+}
+
+static int numeroBotoesTela(void)
+{
+    if (estadoJogo == ESTADO_MENU_PRINCIPAL) return 2;
+    if (estadoJogo == ESTADO_PAUSADO) return 3;
+    return 0; /* instrucoes: retorno pelo teclado */
+}
+
+static void acionaBotaoTela(int indice)
+{
+    if (estadoJogo == ESTADO_MENU_PRINCIPAL) {
+        if (indice == 0) fechaMenu();
+        else exit(0);
+    } else if (estadoJogo == ESTADO_PAUSADO) {
+        if (indice == 0) fechaMenu();
+        else if (indice == 1) {
+            estadoJogo = ESTADO_INSTRUCOES;
+            botaoSelecionado = 0;
+        } else exit(0);
+    } else if (estadoJogo == ESTADO_INSTRUCOES) {
+        estadoJogo = ESTADO_PAUSADO;
+        botaoSelecionado = 0;
+    }
+}
+
+static void limitesBotao(int indice, float *x0, float *y0,
+                         float *x1, float *y1)
+{
+    float centroY;
+
+    if (numeroBotoesTela() == 3)
+        centroY = alturaJanela * (indice == 0 ? 0.42f :
+                                  indice == 1 ? 0.29f : 0.16f);
+    else if (numeroBotoesTela() == 1)
+        centroY = alturaJanela * 0.16f;
+    else
+        centroY = alturaJanela * (indice == 0 ? 0.38f : 0.25f);
+
+    *x0 = (larguraJanela - 300.0f) / 2.0f;
+    *x1 = *x0 + 300.0f;
+    *y0 = centroY - 36.0f;
+    *y1 = centroY + 36.0f;
+}
+
+static int pontoNoBotao(int x, int y, int indice)
+{
+    float x0, y0, x1, y1;
+    limitesBotao(indice, &x0, &y0, &x1, &y1);
+    y = alturaJanela - y;
+    return x >= x0 && x <= x1 && y >= y0 && y <= y1;
+}
+
+static void desenhaBotao(int indice, const char *texto)
+{
+    float x0, y0, x1, y1;
+    limitesBotao(indice, &x0, &y0, &x1, &y1);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(indice == botaoSelecionado ? 0.10f : 0.06f,
+              indice == botaoSelecionado ? 0.65f : 0.18f,
+              indice == botaoSelecionado ? 0.95f : 0.25f, 0.95f);
+    retangulo(x0, y0, x1, y1);
+    glDisable(GL_BLEND);
+
+    glColor3f(1.0f, 1.0f, 1.0f);
+    desenhaTextoCentralizado(FONTE_TITULO, (x0 + x1) / 2.0f, y0 + 23.0f, texto);
+}
+
+static void desenhaMira(void)
+{
+    float x = larguraJanela / 2.0f, y = alturaJanela / 2.0f;
+    glDisable(GL_TEXTURE_2D);
+    glLineWidth(2.0f);
+    glColor3f(1.0f, 1.0f, 1.0f);
+    glBegin(GL_LINES);
+    glVertex2f(x - 9.0f, y); glVertex2f(x + 9.0f, y);
+    glVertex2f(x, y - 9.0f); glVertex2f(x, y + 9.0f);
+    glEnd();
+}
+
+/* Desenha um bloco real, reduzido e girado, dentro de um slot 2D. O
+   centro e a posicao continuam em pixels; apenas a aparencia do item
+   usa a geometria 3D ja existente. */
+static void desenhaIconeBloco3D(int tipo, float x, float y, float lado)
+{
+    float tamanho = lado * 0.429f; /* aumento de 10% sobre a escala atual */
+
+    glPushMatrix();
+    glTranslatef(x + lado / 2.0f, y + lado / 2.0f, 0.0f);
+    glRotatef(28.0f, 1.0f, 0.0f, 0.0f);
+    glRotatef(-42.0f, 0.0f, 1.0f, 0.0f);
+    glScalef(tamanho, tamanho, tamanho);
+    glTranslatef(-0.5f, -0.5f, -0.5f);
+
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, atlas);
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+    desenhaBloco(tipo, 1.0f, TODAS_FACES);
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glPopMatrix();
+}
+
+static void desenhaBarraItens(void)
+{
+    float lado = 58.0f, espaco = 6.0f;
+    float largura = NUM_ITENS * lado + (NUM_ITENS - 1) * espaco + 24.0f;
+    float x0 = (larguraJanela - largura) / 2.0f;
+    float y0 = 18.0f;
+    int i;
+
+    glDisable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(0.02f, 0.02f, 0.03f, 0.80f);
+    retangulo(x0, y0, x0 + largura, y0 + lado + 24.0f);
+    glDisable(GL_BLEND);
+
+    /* Limpa somente a profundidade para os cubos da interface nao serem
+       escondidos pela cena 3D ja desenhada. */
+    glClear(GL_DEPTH_BUFFER_BIT);
+
+    for (i = 0; i < NUM_ITENS; i++) {
+        float x = x0 + 12.0f + i * (lado + espaco);
+        glColor3f(i == itemSelecionado ? 1.0f : 0.35f,
+                  i == itemSelecionado ? 0.85f : 0.35f,
+                  i == itemSelecionado ? 0.20f : 0.35f);
+        retangulo(x - 2.0f, y0 + 10.0f, x + lado + 2.0f, y0 + lado + 14.0f);
+        desenhaIconeBloco3D(tiposItens[i], x, y0 + 12.0f, lado);
+        glDisable(GL_TEXTURE_2D);
+        { char quantidade[16];
+          sprintf(quantidade, "%d", quantidadesItens[i]);
+          float textoX = x + lado - larguraTexto(FONTE, quantidade) - 3.0f;
+          float textoY = y0 + 15.0f;
+          /* sombra preta deslocada para destacar o numero */
+          glColor3f(0.0f, 0.0f, 0.0f);
+          escreve(FONTE, textoX + 1.0f, textoY - 1.0f, quantidade);
+          glColor3f(1.0f, 1.0f, 1.0f);
+          escreve(FONTE, textoX, textoY, quantidade); }
+    }
+}
+
+static void desenhaInstrucoes(void)
+{
+    static const char *linhas[][2] = {
+        { "W / S",              "andar para frente / tras" },
+        { "A / D",              "andar para os lados" },
+        { "R (segurando)",      "correr" },
+        { "Espaco / seta cima", "subir" },
+        { "Shift / seta baixo", "descer" },
+        { "Setas esquerda/direita", "girar o olhar" },
+        { "Mouse",              "olhar ao redor" },
+        { "Tab",                "liberar ou capturar o cursor" },
+        { "V ou F5",            "alternar primeira/terceira pessoa" },
+        { "P",                  "alternar perspectiva/ortografica" },
+        { "+ / -",              "aproximar ou afastar" },
+        { "Roda",               "selecionar item" },
+        { "1 a 9",              "selecionar espaco da barra" },
+        { "ESC",                "abrir pausa ou voltar" },
+        { "Q (menu)",           "sair do jogo" }
+    };
+    int i;
+    float painelY = 78.0f;
+    float painelW = larguraJanela < 868 ? larguraJanela - 48.0f : 820.0f;
+    float painelX = (larguraJanela - painelW) / 2.0f;
+    float painelH = alturaJanela - 120.0f;
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(0.03f, 0.05f, 0.08f, 0.94f);
+    retangulo(painelX, painelY, painelX + painelW, painelY + painelH);
+    glDisable(GL_BLEND);
+
+    glColor3f(1.0f, 0.86f, 0.30f);
+    desenhaTextoCentralizado(FONTE_TITULO, larguraJanela / 2.0f,
+                             painelY + painelH - 42.0f, "INSTRUÇÕES");
+
+    for (i = 0; i < (int)(sizeof(linhas) / sizeof(linhas[0])); i++) {
+        float y = painelY + painelH - 88.0f - i * 27.0f;
+        glColor3f(1.0f, 0.86f, 0.30f);
+        escreve(FONTE, painelX + 28.0f, y, linhas[i][0]);
+        glColor3f(0.92f, 0.92f, 0.92f);
+        escreve(FONTE, painelX + 220.0f, y, linhas[i][1]);
+    }
+
+}
+
+static void desenhaInformacoes(void)
+{
+    char texto[128];
+    sprintf(texto, "FPS: %d   Posicao: (%.2f, %.2f, %.2f)",
+            fpsExibido, jogadorX, jogadorY, jogadorZ);
+    glDisable(GL_TEXTURE_2D);
+    glColor3f(1.0f, 1.0f, 1.0f);
+    escreve(FONTE, 14.0f, alturaJanela - 28.0f, texto);
+}
+
+void movimentoInterface(int x, int y)
+{
+    if (estadoJogo == ESTADO_MENU_PRINCIPAL ||
+        estadoJogo == ESTADO_PAUSADO ||
+        estadoJogo == ESTADO_INSTRUCOES) {
+        int i;
+        for (i = 0; i < numeroBotoesTela(); i++)
+            if (pontoNoBotao(x, y, i)) {
+                botaoSelecionado = i;
+                glutPostRedisplay();
+                return;
+            }
+    }
+}
+
+void desenhaInterface(void)
+{
+    if (estadoJogo == ESTADO_JOGANDO) {
+        desenhaMira();
+        desenhaBarraItens();
+        desenhaInformacoes();
+        return;
+    }
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(0.0f, 0.0f, 0.0f,
+              estadoJogo == ESTADO_MENU_PRINCIPAL ? 0.58f : 0.50f);
+    retangulo(0, 0, larguraJanela, alturaJanela);
+    glDisable(GL_BLEND);
+
+    if (estadoJogo == ESTADO_INSTRUCOES) {
+        desenhaInstrucoes();
+        return;
+    }
+
+    glColor3f(1.0f, 0.86f, 0.30f);
+    desenhaTextoCentralizado(FONTE_TITULO, larguraJanela / 2.0f,
+                             alturaJanela * 0.72f,
+                             estadoJogo == ESTADO_MENU_PRINCIPAL ? "MINECRAFT CG" : "PAUSADO");
+    desenhaBotao(0, estadoJogo == ESTADO_MENU_PRINCIPAL ? "JOGAR" : "CONTINUAR");
+    if (estadoJogo == ESTADO_MENU_PRINCIPAL) {
+        desenhaBotao(1, "SAIR");
+    } else {
+        desenhaBotao(1, "INSTRUÇÕES");
+        desenhaBotao(2, "SAIR");
+    }
+
+    glColor3f(0.82f, 0.82f, 0.86f);
+    if (estadoJogo == ESTADO_PAUSADO)
+        desenhaTextoCentralizado(FONTE, larguraJanela / 2.0f,
+                                 alturaJanela * 0.035f,
+                                 "ESC ou CONTINUAR volta ao jogo");
 }
 
 
@@ -1996,20 +2298,19 @@ void desenha(void)
     if (modoCamera == TERCEIRA_PESSOA)
         desenhaJogador();
     desenhaTransparentes();
-    if (menuAberto)
-        desenhaMenu();                      /* por cima de tudo */
+    iniciaInterface();
+    desenhaInterface();
+    terminaInterface();
 
     /* desenhamos num buffer escondido; aqui ele troca de lugar com o que
        está na tela, para não aparecer a imagem pela metade */
     glutSwapBuffers();
 
-    /* conta os quadros e, a cada 1000 ms, mostra o total no título */
+    /* conta os quadros para o texto da interface */
     quadros++;
     int agora = glutGet(GLUT_ELAPSED_TIME);
     if (agora - inicioContagem >= 1000) {
-        char titulo[64];
-        sprintf(titulo, "Minecraft | %d FPS", quadros);
-        glutSetWindowTitle(titulo);
+        fpsExibido = quadros;
         quadros = 0;
         inicioContagem = agora;
     }
@@ -2071,7 +2372,8 @@ int main(int argc, char **argv)
     glClearColor(0.53f, 0.81f, 0.92f, 1.0f);   /* cor de fundo: azul do céu */
 
     construirMundo();                       /* preenche a matriz, uma vez só */
-    capturaCursor();                        /* o mouse já começa controlando o olhar */
+    contaItensDoMundo();                    /* quantidades exibidas na barra */
+    liberaCursor();                         /* menu inicial: cursor visivel */
 
     ultimoTempo = glutGet(GLUT_ELAPSED_TIME);
     inicioContagem = ultimoTempo;

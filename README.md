@@ -15,7 +15,7 @@ O código inteiro está em um único arquivo, [`mine.c`](mine.c), comentado para
 | COLISÃO | Posição do personagem e colisão com o mundo |
 | CÂMERA | Projeção, direção do olhar, primeira e terceira pessoa, desenho do personagem |
 | ENTRADA | Teclado, mouse, roda e atualização do movimento |
-| MENU | Menu de pausa com as instruções (ESC) |
+| INTERFACE | Menu principal, pausa, mira, barra de itens e informações em tela |
 | QUADRO E PROGRAMA PRINCIPAL | Desenho do quadro, FPS e `main` |
 
 As funções centrais têm um comentário antes delas explicando o que fazem e por quê.
@@ -30,7 +30,10 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 - Uma casinha de vidro ao lado de onde o personagem começa.
 - Duas nuvens.
 - Um personagem no estilo do Minecraft, com braços e pernas que balançam ao andar.
-- Um menu de pausa (ESC) com as instruções de movimentação.
+- Um menu principal com os botões Jogar e Sair.
+- Um menu de pausa (ESC) com os botões Continuar, Instruções e Sair.
+- Uma mira fixa no centro, barra de nove itens com miniaturas tridimensionais dos blocos, quantidades e item selecionado.
+- Informações de FPS e posição do personagem no canto superior.
 
 Tudo é feito com **um único cubo de lado 1**, desenhado várias vezes em posições diferentes. Os blocos do terreno são texturizados com um atlas pixelado; a água e o vidro são semitransparentes. Não há iluminação: cada face recebe um brilho fixo (topo claro, laterais médias, base escura), multiplicado pela textura, o que dá a impressão de volume. As nuvens e o personagem continuam com cor sólida.
 
@@ -44,6 +47,7 @@ Tudo é feito com **um único cubo de lado 1**, desenhado várias vezes em posi�
 | 4 | Perspectiva, correção de proporção, câmera com `gluLookAt`, navegação pelo teclado | `aplicaProjecao`, `redimensiona`, `posicionaCamera` |
 | 5 | Teclado por estado e tempo de quadro; mouse com yaw e pitch e captura do cursor; matriz do mundo e colisão por caixa alinhada aos eixos; primeira e terceira pessoa; zoom pela roda | `teclado`, `tecladoSolto`, `atualiza`, `mundo`, `posicaoLivre`, `moveJogador`, `direcaoDoOlhar`, `movimentoMouse`, `posicionaCamera`, `desenhaJogador`, `rodaMouse` |
 | Texturas e transparência | Atlas lido de um PPM e enviado com `glTexImage2D`; células por face e `glTexCoord2f`; filtro `GL_NEAREST` (visual pixelado) e `GL_MODULATE`; alfa por cor-chave; recorte com `GL_ALPHA_TEST` nas folhas; mistura com `GL_BLEND` e `glDepthMask` no vidro e na água, em três passadas, com os semitransparentes ordenados; faces ocultas por vizinho opaco | `lerPPM`, `converteRGBA`, `carregaAtlas`, `celulaDaFace`, `coordenadasDaCelula`, `desenhaBloco`, `faceVisivel`, `facesVisiveis`, `desenhaOpacos`, `listaTransparentes`, `desenhaTransparentes`, `casinhaEm` |
+| Interface e estados | Passada 2D com as duas matrizes salvas; projeção em pixels; menu principal, jogo e pausa; cursor visível nos menus e capturado no jogo; mira, barra de nove itens, seleção numérica/roda, FPS e posição | `iniciaInterface`, `terminaInterface`, `desenhaInterface`, `movimentoInterface`, `estadoJogo`, `botaoSelecionado` |
 
 ## Dependências
 
@@ -121,16 +125,18 @@ O formato PPM (`P6`) não tem canal alfa. Na leitura, o jogo transforma o magent
 | ← / → | Girar o olhar | estado |
 | Espaço ou ↑ / Shift ou ↓ | Subir / descer | estado |
 | Mouse | Direção do olhar (já começa capturado) | evento de movimento |
-| Roda ou + / - | Aproximar / afastar (campo de visão) | evento |
+| Roda | Selecionar o próximo/anterior item | evento |
+| + / - | Aproximar / afastar (campo de visão) | evento |
 | Tab | Liberar / capturar o cursor (clicar na janela também captura) | evento |
 | F5 ou V | Alternar primeira / terceira pessoa | evento |
 | P | Alternar perspectiva / ortográfica | evento |
-| ESC | Abrir / fechar o menu de pausa, com os controles | evento |
-| Q (com o menu aberto) | Sair | evento |
+| ESC | Abrir / fechar a pausa ou voltar das instruções | evento |
+| 1 a 9 | Selecionar espaço da barra de itens | evento |
+| Q (em um menu) | Sair | evento |
 
 A coluna "Leitura" diz como cada entrada é tratada: ações contínuas, que duram enquanto a tecla está pressionada, são lidas **por estado** a cada quadro; ações discretas, que acontecem uma vez por toque, são tratadas **por evento**.
 
-O personagem começa no gramado, olhando para a montanha, com a câmera em terceira pessoa. Não há gravidade: para subir um degrau, use Espaço ou ↑. O mouse já começa controlando o olhar; Tab libera o cursor, e Tab ou um clique na janela o capturam de novo.
+O jogo começa no menu principal. Ao clicar em Jogar, o personagem aparece no gramado, olhando para a montanha, com a câmera em terceira pessoa. Não há gravidade: para subir um degrau, use Espaço ou ↑. Durante o jogo, o mouse controla o olhar; Tab libera o cursor, e Tab ou um clique na janela o capturam de novo.
 
 ## Como o cenário é montado
 
