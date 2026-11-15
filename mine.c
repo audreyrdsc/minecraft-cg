@@ -2172,7 +2172,7 @@ static void desenhaIdentidadeMenuPrincipal(void)
     float alturaSubtitulo = larguraSubtitulo * texturaSubtitulo.altura /
                             texturaSubtitulo.largura;
     float xSubtitulo = (larguraJanela - larguraSubtitulo) / 2.0f;
-    float ySubtitulo = yLogo - 18.0f - alturaSubtitulo;
+    float ySubtitulo = yLogo - 4.0f - alturaSubtitulo;
 
     float larguraVersao = larguraLimitada((float)texturaVersao.largura,
                                            300.0f, 20.0f);
