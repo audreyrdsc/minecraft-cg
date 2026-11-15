@@ -2106,6 +2106,9 @@ void terminaInterface(void)
     glDisable(GL_BLEND);
     glDepthMask(GL_TRUE);
     glEnable(GL_TEXTURE_2D);
+    /* Os elementos da UI usam texturas próprias. A cena 3D do próximo
+       quadro deve voltar a encontrar o atlas ligado ao estado corrente. */
+    glBindTexture(GL_TEXTURE_2D, atlas);
     glEnable(GL_CULL_FACE);
     glEnable(GL_DEPTH_TEST);
 #if DEMO_UI_MATRIX_ONLY
