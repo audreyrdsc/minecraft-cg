@@ -64,6 +64,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include "resource.h"
 #endif
 
 #ifdef __APPLE__
@@ -557,7 +558,8 @@ void carregaAtlas(void)
 /* Texturas da interface                                              */
 /* As imagens do menu ficam fora do atlas: são faixas largas, não     */
 /* células 16 x 16 de blocos. O mesmo leitor PPM é reutilizado, mas   */
-/* o preto do fundo dessas imagens vira alfa zero.                    */
+/* os pixels transparentes vêm como magenta e viram alfa zero; o      */
+/* preto real das bordas permanece opaco.                              */
 /* ------------------------------------------------------------------ */
 
 static unsigned char *converteUIRGBA(const unsigned char *rgb, int l, int a)
@@ -571,7 +573,7 @@ static unsigned char *converteUIRGBA(const unsigned char *rgb, int l, int a)
         rgba[4*i] = r;
         rgba[4*i+1] = g;
         rgba[4*i+2] = b;
-        rgba[4*i+3] = (r == 0 && g == 0 && b == 0) ? 0 : 255;
+        rgba[4*i+3] = (r == 255 && g == 0 && b == 255) ? 0 : 255;
     }
     return rgba;
 }
@@ -2172,10 +2174,10 @@ static void desenhaIdentidadeMenuPrincipal(void)
     float alturaSubtitulo = larguraSubtitulo * texturaSubtitulo.altura /
                             texturaSubtitulo.largura;
     float xSubtitulo = (larguraJanela - larguraSubtitulo) / 2.0f;
-    float ySubtitulo = yLogo - 4.0f - alturaSubtitulo;
+    float ySubtitulo = yLogo - alturaSubtitulo + 8.0f;
 
     float larguraVersao = larguraLimitada((float)texturaVersao.largura,
-                                           300.0f, 20.0f);
+                                           150.0f, 20.0f);
     float alturaVersao = larguraVersao * texturaVersao.altura /
                          texturaVersao.largura;
 
@@ -2522,6 +2524,29 @@ int main(int argc, char **argv)
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
     glutInitWindowSize(larguraJanela, alturaJanela);
     glutCreateWindow("Minecraft");
+
+#ifdef _WIN32
+    /* Maximiza a janela mantendo a moldura e a barra de título, e usa
+       o ícone embutido no executável nos dois tamanhos da janela. */
+    {
+        HWND janela = GetForegroundWindow();
+        HINSTANCE modulo = GetModuleHandle(NULL);
+        HICON iconeGrande = (HICON)LoadImage(
+            modulo, MAKEINTRESOURCE(IDI_MINECRAFT), IMAGE_ICON,
+            32, 32, LR_DEFAULTSIZE);
+        HICON iconePequeno = (HICON)LoadImage(
+            modulo, MAKEINTRESOURCE(IDI_MINECRAFT), IMAGE_ICON,
+            16, 16, LR_DEFAULTSIZE);
+
+        if (janela != NULL) {
+            if (iconeGrande != NULL)
+                SendMessage(janela, WM_SETICON, ICON_BIG, (LPARAM)iconeGrande);
+            if (iconePequeno != NULL)
+                SendMessage(janela, WM_SETICON, ICON_SMALL, (LPARAM)iconePequeno);
+            ShowWindow(janela, SW_MAXIMIZE);
+        }
+    }
+#endif
 
 #ifndef __APPLE__
     /* a GLEW só pode ser iniciada depois que a janela existe */

@@ -81,7 +81,8 @@ gcc mine.c -o mine -lGLEW -lGL -lGLU -lglut -lm
 
 **Windows (MinGW)**
 ```bash
-gcc mine.c -o mine.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+windres mine.rc -O coff -o mine.res.o
+gcc mine.c mine.res.o -o mine.exe -lglew32 -lfreeglut -lopengl32 -lglu32
 mine.exe
 ```
 
