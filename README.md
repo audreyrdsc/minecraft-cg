@@ -6,6 +6,41 @@ Um cenário no estilo Minecraft feito em C com OpenGL no pipeline fixo, como mat
 
 O núcleo executável continua em [`mine.c`](mine.c), comentado para ser lido do começo ao fim, e os tipos compartilhados começaram a ser extraídos para [`include/game_types.h`](include/game_types.h). Essa migração incremental preserva o ponto de entrada enquanto prepara a separação dos sistemas em módulos.
 
+## Estado atual do projeto
+
+Esta é a versão compilada atualmente em `mine.exe`. O jogo inicia de dia
+(`tempoMundo = 0.25`) e possui um ciclo contínuo de iluminação, com spawn de
+inimigos restrito à noite e música noturna independente dos efeitos sonoros.
+
+- O céu usa shader GLSL 1.20 em um domo 3D centrado na câmera, com transição
+  suave de cores, brilho de horizonte, sol e lua com halo, estrelas com
+  cintilação, nuvens procedurais em movimento e uma passagem eventual de
+  cometa à noite. Os elementos acompanham a orientação vertical do olhar e
+  não ficam presos ao horizonte da tela.
+- As nuvens estáticas de blocos foram desativadas para não duplicar a camada
+  procedural do céu.
+- A água usa shader GLSL 1.20 com ondulação leve, transparência, reflexos e
+  brilho animado.
+- A HUD possui corações, fome e saturação em ícones pixelados, barra de itens,
+  vida sobre inimigos e feedback de combate.
+- Os sons ficam em `assets/audio/` no formato WAV: dano do jogador, comer,
+  passos, quebra/coleta de blocos, vidro, água, ataque e morte de zumbi,
+  spawn de zumbi, disparo e música noturna em repetição.
+
+### Compilação atual no Windows
+
+No PowerShell, a partir da pasta do projeto, o executável principal é sempre
+gerado em `./mine.exe`:
+
+```powershell
+$files=@('mine.c','src/inventory.c','src/crafting.c','src/entities.c','src/world.c','src/chunks.c','src/worldgen.c','src/save.c','src/effects.c','src/audio.c','src/player.c')
+& 'C:\msys64\mingw64\bin\gcc.exe' $files -o mine.exe -lglew32 -lfreeglut -lopengl32 -lglu32 -lwinmm
+```
+
+O `-lwinmm` é necessário para a reprodução WAV pelo Windows MCI/PlaySound.
+O jogo deve ser executado a partir da pasta do projeto para encontrar o atlas
+e os arquivos de áudio.
+
 ### Organização atual
 
 - `mine.c`: ponto de entrada e implementação legada dos sistemas do protótipo.
@@ -50,7 +85,7 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 - Uma praia e o mar.
 - Uma árvore no formato do Minecraft, com as folhas vazadas.
 - Uma casinha de vidro ao lado de onde o personagem começa.
-- Duas nuvens.
+- Nuvens procedurais animadas pelo shader do céu, com ruído em múltiplas escalas.
 - Um personagem no estilo do Minecraft, com braços e pernas que balançam ao andar.
 - Gravidade, salto e colisão vertical com o terreno e o teto.
 - Quebra de blocos com o botão esquerdo e colocação do item selecionado com o botão direito.
@@ -72,7 +107,8 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 - A seed pode ser definida ao iniciar com `mine.exe --seed 12345` ou `mine.exe --seed=12345`, permitindo reproduzir o mesmo mundo.
 - Chuva alternável com `T` e partículas visuais ao quebrar blocos.
 - Cristais luminosos coletáveis em campos de tundra, uma mecânica visual original do projeto; depois de minerados, podem ser recolocados como iluminação.
-- Ciclo contínuo de dia e noite com mudança do céu, sol, lua, estrelas noturnas e horário no HUD.
+- Ciclo contínuo de dia e noite com shader de céu, sol, lua, estrelas cintilantes,
+  nuvens móveis, cometa eventual e horário no HUD.
 - Iluminação direcional dinâmica calculada pela posição do sol.
 - Tochas emissoras no cenário e colocáveis pelo jogador, com iluminação artificial por distância reconstruída após cada alteração.
 - Um menu principal com os botões Jogar e Sair.
@@ -142,7 +178,7 @@ gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.
 **Windows (MinGW)**
 ```bash
 windres mine.rc -O coff -o mine.res.o
-gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c mine.res.o -o mine.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c mine.res.o -o mine.exe -lglew32 -lfreeglut -lopengl32 -lglu32 -lwinmm
 mine.exe
 ```
 

@@ -453,6 +453,7 @@ static void interageSlotInventario(int slot, int botao);
 static void desenhaCrafting(void);
 static void interageCrafting(int x, int y, int botao);
 static void desenhaAstros(void);
+static void desenhaCeuShader(void);
 static void desenhaSelecaoBloco(void);
 static void iniciaAnimacaoBraco(int tipo);
 
@@ -589,6 +590,10 @@ static GLuint shaderAgua = 0;
 static GLint shaderAguaTempo = -1;
 static GLint shaderAguaBloco = -1;
 
+static GLuint shaderCeu = 0;
+static GLint shaderCeuTempo = -1;
+static GLUquadric *ceuDomo = NULL;
+
 static GLuint compilaShaderAgua(GLenum tipo, const char *fonte)
 {
     GLuint shader = glCreateShader(tipo);
@@ -602,7 +607,7 @@ static GLuint compilaShaderAgua(GLenum tipo, const char *fonte)
         char log[1024];
         GLsizei tamanho = 0;
         glGetShaderInfoLog(shader, sizeof(log), &tamanho, log);
-        log[tamanho < (GLsizei)sizeof(log) ? tamanho : sizeof(log) - 1] = '\0';
+        log[(size_t)(tamanho < (GLsizei)sizeof(log) ? tamanho : (GLsizei)sizeof(log) - 1)] = '\0';
         printf("Shader da agua: %s\n", log);
         fflush(stdout);
         glDeleteShader(shader);
@@ -684,7 +689,7 @@ static void inicializaShaderAgua(void)
         char log[1024];
         GLsizei tamanho = 0;
         glGetProgramInfoLog(shaderAgua, sizeof(log), &tamanho, log);
-        log[tamanho < (GLsizei)sizeof(log) ? tamanho : sizeof(log) - 1] = '\0';
+        log[(size_t)(tamanho < (GLsizei)sizeof(log) ? tamanho : (GLsizei)sizeof(log) - 1)] = '\0';
         printf("Programa da agua: %s\n", log);
         fflush(stdout);
         glDeleteProgram(shaderAgua);
@@ -697,6 +702,139 @@ static void inicializaShaderAgua(void)
     glUniform1i(glGetUniformLocation(shaderAgua, "u_atlas"), 0);
     glUseProgram(0);
     printf("Shader da agua ativo.\n");
+    fflush(stdout);
+}
+
+static void inicializaShaderCeu(void)
+{
+    static const char *vertexShader =
+        "#version 120\n"
+        "varying vec3 v_direcao;\n"
+        "void main() {\n"
+        "  v_direcao = gl_Vertex.xyz;\n"
+        "  gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;\n"
+        "}\n";
+    static const char *fragmentShader =
+        "#version 120\n"
+        "uniform float u_tempo;\n"
+        "varying vec3 v_direcao;\n"
+        "const float PI = 3.14159265;\n"
+        "float hash(vec2 p) {\n"
+        "  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n"
+        "}\n"
+        "float ruido(vec2 p) {\n"
+        "  vec2 i = floor(p);\n"
+        "  vec2 f = smoothstep(0.0, 1.0, fract(p));\n"
+        "  float a = hash(i);\n"
+        "  float b = hash(i + vec2(1.0, 0.0));\n"
+        "  float c = hash(i + vec2(0.0, 1.0));\n"
+        "  float d = hash(i + vec2(1.0, 1.0));\n"
+        "  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n"
+        "}\n"
+        "float fbm(vec2 p) {\n"
+        "  float valor = 0.0;\n"
+        "  float peso = 0.5;\n"
+        "  for (int i = 0; i < 4; i++) {\n"
+        "    valor += ruido(p) * peso;\n"
+        "    p = p * 2.03 + vec2(13.7, 7.1);\n"
+        "    peso *= 0.5;\n"
+        "  }\n"
+        "  return valor;\n"
+        "}\n"
+        "void main() {\n"
+        "  vec3 dir = normalize(v_direcao);\n"
+        "  float solAltura = sin(u_tempo * 2.0 * PI);\n"
+        "  float dia = smoothstep(-0.14, 0.16, solAltura);\n"
+        "  float noite = 1.0 - dia;\n"
+        "  float horizonte = smoothstep(-0.12, 0.78, dir.y);\n"
+        "  vec3 diaHorizonte = vec3(0.58, 0.82, 0.96);\n"
+        "  vec3 diaAlto = vec3(0.10, 0.40, 0.72);\n"
+        "  vec3 noiteHorizonte = vec3(0.08, 0.12, 0.28);\n"
+        "  vec3 noiteAlto = vec3(0.005, 0.012, 0.045);\n"
+        "  vec3 corDia = mix(diaHorizonte, diaAlto, horizonte);\n"
+        "  vec3 corNoite = mix(noiteHorizonte, noiteAlto, horizonte);\n"
+        "  vec3 cor = mix(corNoite, corDia, dia);\n"
+        "  float angulo = u_tempo * 2.0 * PI;\n"
+        "  vec3 solDir = normalize(vec3(cos(angulo), 0.78 * sin(angulo), 0.18));\n"
+        "  vec3 luaDir = -solDir;\n"
+        "  float distSol = 1.0 - dot(dir, solDir);\n"
+        "  float distLua = 1.0 - dot(dir, luaDir);\n"
+        "  float haloSol = 1.0 - smoothstep(0.0004, 0.055, distSol);\n"
+        "  float discoSol = 1.0 - smoothstep(0.00012, 0.00065, distSol);\n"
+        "  float haloLua = 1.0 - smoothstep(0.0003, 0.040, distLua);\n"
+        "  float discoLua = 1.0 - smoothstep(0.00010, 0.00050, distLua);\n"
+        "  cor += vec3(1.0, 0.48, 0.08) * haloSol * dia * 0.20;\n"
+        "  cor += vec3(1.0, 0.85, 0.38) * discoSol * dia;\n"
+        "  cor += vec3(0.28, 0.40, 0.75) * haloLua * noite * 0.18;\n"
+        "  cor += vec3(0.78, 0.86, 1.0) * discoLua * noite * 0.90;\n"
+        "  vec2 estrelaUv = vec2(atan(dir.z, dir.x) / (2.0 * PI) + 0.5, dir.y * 0.5 + 0.5) * 105.0;\n"
+        "  vec2 celulaEstrela = floor(estrelaUv);\n"
+        "  vec2 localEstrela = fract(estrelaUv) - 0.5;\n"
+        "  float sorteEstrela = hash(celulaEstrela);\n"
+        "  float estrela = step(0.982, sorteEstrela) * smoothstep(0.16, 0.0, length(localEstrela));\n"
+        "  float cintilacao = 0.72 + 0.28 * sin(u_tempo * 240.0 + sorteEstrela * 35.0);\n"
+        "  cor += vec3(0.72, 0.86, 1.0) * estrela * cintilacao * noite * 0.95;\n"
+        "  vec2 nuvemUv = vec2(atan(dir.z, dir.x) / (2.0 * PI) * 1.35 + u_tempo * 0.055, dir.y * 2.2 + 1.3);\n"
+        "  float camadaNuvem = fbm(nuvemUv * 2.1);\n"
+        "  camadaNuvem = smoothstep(0.57, 0.72, camadaNuvem);\n"
+        "  float faixaNuvem = smoothstep(0.12, 0.42, dir.y) * (1.0 - smoothstep(0.78, 0.98, dir.y));\n"
+        "  float alfaNuvem = camadaNuvem * faixaNuvem * dia * 0.22;\n"
+        "  cor = mix(cor, vec3(0.92, 0.96, 1.0), alfaNuvem);\n"
+        "  float tCometa = mod(u_tempo * 240.0, 53.0);\n"
+        "  float ativoCometa = smoothstep(40.0, 40.5, tCometa);\n"
+        "  ativoCometa *= 1.0 - smoothstep(42.5, 43.0, tCometa);\n"
+        "  float progresso = clamp((tCometa - 40.0) / 3.0, 0.0, 1.0);\n"
+        "  vec3 inicioCometa = normalize(vec3(-0.72, 0.68, 0.20));\n"
+        "  vec3 fimCometa = normalize(vec3(0.62, 0.28, 0.20));\n"
+        "  vec3 posCometa = normalize(mix(inicioCometa, fimCometa, progresso));\n"
+        "  vec3 direcaoCometa = normalize(fimCometa - inicioCometa);\n"
+        "  vec3 cauda = normalize(posCometa - direcaoCometa * 0.14);\n"
+        "  vec3 relativo = dir - cauda;\n"
+        "  float aoLongo = clamp(dot(relativo, direcaoCometa), 0.0, 0.14);\n"
+        "  float distanciaCauda = length(relativo - direcaoCometa * aoLongo);\n"
+        "  float brilhoCauda = smoothstep(0.018, 0.0, distanciaCauda) * (1.0 - aoLongo / 0.12);\n"
+        "  float brilhoNucleo = smoothstep(0.018, 0.0, length(dir - posCometa));\n"
+        "  cor += vec3(1.0, 0.78, 0.42) * (brilhoCauda * 0.55 + brilhoNucleo) * ativoCometa * noite;\n"
+        "  gl_FragColor = vec4(cor, 1.0);\n"
+        "}\n";
+    GLuint vs, fs;
+    GLint ligado = GL_FALSE;
+
+    if (shaderCeu || !glCreateShader) return;
+    vs = compilaShaderAgua(GL_VERTEX_SHADER, vertexShader);
+    fs = compilaShaderAgua(GL_FRAGMENT_SHADER, fragmentShader);
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return;
+    }
+    shaderCeu = glCreateProgram();
+    glAttachShader(shaderCeu, vs);
+    glAttachShader(shaderCeu, fs);
+    glLinkProgram(shaderCeu);
+    glGetProgramiv(shaderCeu, GL_LINK_STATUS, &ligado);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ligado) {
+        char log[1024];
+        GLsizei tamanho = 0;
+        glGetProgramInfoLog(shaderCeu, sizeof(log), &tamanho, log);
+        log[(size_t)(tamanho < (GLsizei)sizeof(log) ? tamanho : (GLsizei)sizeof(log) - 1)] = '\0';
+        printf("Programa do ceu: %s\n", log);
+        fflush(stdout);
+        glDeleteProgram(shaderCeu);
+        shaderCeu = 0;
+        return;
+    }
+    shaderCeuTempo = glGetUniformLocation(shaderCeu, "u_tempo");
+    ceuDomo = gluNewQuadric();
+    if (!ceuDomo) {
+        glDeleteProgram(shaderCeu);
+        shaderCeu = 0;
+        printf("Nao foi possivel criar o domo do ceu.\n");
+        return;
+    }
+    printf("Shader do ceu ativo.\n");
     fflush(stdout);
 }
 
@@ -1846,21 +1984,17 @@ void arvoreEm(int x, int z)
 }
 
 /* ------------------------------------------------------------------ */
-/* Nuvem: uma placa retangular de blocos brancos, sempre na altura    */
-/* y = ALTURA_NUVEM, como as nuvens achatadas do Minecraft.           */
-/*   (x, z)    canto da nuvem no mapa                                 */
-/*   largura   quantos blocos ela ocupa em x                          */
-/*   fundo     quantos blocos ela ocupa em z                          */
-/* Exemplo: nuvemEm(1, 2, 5, 3) ocupa x de 1 a 5 e z de 2 a 4.        */
+/* Nuvens: a aparência agora é gerada pelo shader do céu.             */
+/* A função permanece como ponto de compatibilidade para a construção  */
+/* do mundo e não cria mais placas estáticas de blocos.                */
 /* ------------------------------------------------------------------ */
 
 void nuvemEm(int x, int z, int largura, int fundo)
 {
-    int dx, dz;
-
-    for (dx = 0; dx < largura; dx++)
-        for (dz = 0; dz < fundo; dz++)
-            colocaBloco(NUVEM, x + dx, ALTURA_NUVEM, z + dz);
+    (void)x;
+    (void)z;
+    (void)largura;
+    (void)fundo;
 }
 
 static void adicionaLuz(float x, float y, float z,
@@ -3777,6 +3911,7 @@ static void desenhaDisco3D(float cx, float cy, float cz, float raio,
 
 static void desenhaAstros(void)
 {
+    if (shaderCeu) return;
     static const float estrelas[][2] = {
         {0.08f, 0.78f}, {0.16f, 0.62f}, {0.23f, 0.86f}, {0.31f, 0.72f},
         {0.39f, 0.91f}, {0.47f, 0.68f}, {0.55f, 0.84f}, {0.63f, 0.75f},
@@ -3844,6 +3979,34 @@ static void desenhaAstros(void)
                        0.80f, 0.86f, 0.95f);
 
     glDepthMask(GL_TRUE);
+    glPopMatrix();
+}
+
+static void desenhaCeuShader(void)
+{
+    float olhoX, olhoY, olhoZ;
+
+    if (!shaderCeu || !ceuDomo) return;
+    posicaoDoOlho(&olhoX, &olhoY, &olhoZ);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    /* O domo fica centrado no olho, mas mantém a matriz de câmera. Assim
+       a direção do olhar realmente atravessa o céu, em vez de prender
+       os astros à tela. */
+    glTranslatef(olhoX, olhoY, olhoZ);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glUseProgram(shaderCeu);
+    glUniform1f(shaderCeuTempo, tempoMundo);
+    gluSphere(ceuDomo, 180.0, 64, 32);
+    glUseProgram(0);
+    glEnable(GL_CULL_FACE);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
     glPopMatrix();
 }
 
@@ -4062,8 +4225,9 @@ void desenha(void)
     glLoadIdentity();
     posicionaCamera();
 
-    /* O céu vem antes dos blocos e usa profundidade: o sol não pode
-       atravessar montanhas ou construções. */
+    /* O shader cobre a tela antes da geometria do mundo. Os astros antigos
+       continuam disponíveis como fallback caso o shader não compile. */
+    desenhaCeuShader();
     desenhaAstros();
 
     /* opacos antes dos semitransparentes: a mistura precisa do que está
@@ -4165,6 +4329,7 @@ int main(int argc, char **argv)
 
     carregaAtlas();                         /* lê o atlas e liga a textura */
     inicializaShaderAgua();                 /* ondulação e brilho da água */
+    inicializaShaderCeu();                  /* gradiente e astros do céu */
     carregaTexturasUI();                    /* lê os elementos gráficos do menu */
 
     /* as teclas são lidas por estado: a repetição automática do sistema
