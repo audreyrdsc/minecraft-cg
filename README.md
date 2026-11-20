@@ -4,7 +4,29 @@
 
 Um cenário no estilo Minecraft feito em C com OpenGL no pipeline fixo, como material da disciplina de Computação Gráfica.
 
-O código inteiro está em um único arquivo, [`mine.c`](mine.c), comentado para ser lido do começo ao fim. Ele é organizado em seções, nesta ordem:
+O núcleo executável continua em [`mine.c`](mine.c), comentado para ser lido do começo ao fim, e os tipos compartilhados começaram a ser extraídos para [`include/game_types.h`](include/game_types.h). Essa migração incremental preserva o ponto de entrada enquanto prepara a separação dos sistemas em módulos.
+
+### Organização atual
+
+- `mine.c`: ponto de entrada e implementação legada dos sistemas do protótipo.
+- `include/game_types.h`: contratos de dados para inventário, drops, raycast e iluminação.
+- `include/config.h`: dimensões compartilhadas do mundo e dos chunks.
+- `include/inventory.h` e `src/inventory.c`: API e operações de pilhas, hotbar e inventário.
+- `include/crafting.h` e `src/crafting.c`: receitas, grade de crafting e consumo de ingredientes.
+- `include/entities.h` e `src/entities.c`: drops físicos, coleta, zumbis e slimes com comportamento e desenho distintos.
+- `src/entities.c` também contém o primeiro zumbi e a API de combate básico.
+- `include/world.h` e `src/world.c`: matriz 3D do mundo e operações seguras de leitura/escrita.
+- `include/chunks.h` e `src/chunks.c`: divisão lógica em chunks de 16 × 16, marcação de regiões alteradas, carregamento por distância do jogador, cache invalidável de faces visíveis e listas de exibição reconstruídas sob demanda.
+- `include/worldgen.h` e `src/worldgen.c`: seed e geração procedural determinística da extensão do terreno.
+- `include/save.h` e `src/save.c`: salvamento/carregamento binário do mundo, jogador, clima e entidades.
+- `include/effects.h` e `src/effects.c`: chuva/neve alternável por bioma e partículas de quebra de blocos.
+- `include/audio.h` e `src/audio.c`: feedback sonoro portátil para quebra, coleta, dano e alimentação.
+- `include/blocks.h`: catálogo centralizado de blocos, itens, ferramentas e passadas de renderização.
+- `include/player.h`: contrato público de estado, colisão, movimentação e reaparecimento do jogador.
+- `src/player.c`: estado, colisão AABB, movimento e reaparecimento do jogador.
+- `CMakeLists.txt` e `Makefile`: construção reproduzível nas plataformas suportadas.
+
+O arquivo principal é organizado em seções, nesta ordem:
 
 | Seção | Conteúdo |
 |---|---|
@@ -22,7 +44,7 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 
 ## O que tem no cenário
 
-- Um terreno de 16 × 16 colunas de blocos.
+- Um terreno de 64 × 64 colunas de blocos: a área original de 16 × 16 foi preservada e recebeu uma grande extensão procedural.
 - Uma montanha irregular com neve no topo.
 - Um gramado com um laguinho.
 - Uma praia e o mar.
@@ -30,13 +52,37 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 - Uma casinha de vidro ao lado de onde o personagem começa.
 - Duas nuvens.
 - Um personagem no estilo do Minecraft, com braços e pernas que balançam ao andar.
+- Gravidade, salto e colisão vertical com o terreno e o teto.
+- Quebra de blocos com o botão esquerdo e colocação do item selecionado com o botão direito.
+- Drops físicos simples que caem no mundo e são coletados pelo jogador.
+- Inventário interno de 36 slots, com abertura pela tecla `E`.
+- Movimentação de pilhas no inventário por clique esquerdo e unitária por clique direito.
+- Tela de crafting 2 × 2 com receitas de vidro, tochas e picareta (2 areias = 1 vidro; 1 tronco + 1 folha = 4 tochas; 2 pedras + 1 tronco = 1 picareta).
+- Para fabricar a picareta: abra `E`, entre em `C`, clique duas vezes em uma pilha de pedra e uma vez em um tronco; clique no resultado da picareta e selecione-a pela roda do mouse.
+- Barra de vida e dano de queda acima de três blocos, com reaparecimento.
+- Sistema de fome e saturação: o consumo aumenta ao andar/correr, a saturação é consumida primeiro, a fome causa dano quando chega a zero, pode ser recuperada com maçãs e permite regeneração gradual com fome alta.
+- A corrida é bloqueada quando a fome está em nível crítico.
+- Maçãs na hotbar: selecione o item e pressione `F` para comer.
+- Folhas quebradas podem soltar maçãs, criando uma fonte renovável de alimento.
+- Inimigos hostis: zumbi e slime, com perseguição, spawn noturno, desaparecimento ao amanhecer, animação simples, dano por proximidade, invulnerabilidade curta, barra de vida e drops.
+- Extensão procedural com biomas de planície, deserto, tundra e floresta, cavernas simples e minérios de carvão e ferro.
+- Picareta e espada no inventário: minérios exigem picareta para serem extraídos; carvão e ferro viram drops coletáveis.
+- Ferramentas possuem durabilidade de 100 usos, não se empilham e desaparecem quando quebram.
+- Salvamento manual com `F6` e carregamento com `F7`, incluindo mundo, seed, posição, inventário, vida, fome, horário, estado da chuva, zumbis e drops; o arquivo possui cabeçalho versionado, gravação temporária e backup de troca.
+- A seed pode ser definida ao iniciar com `mine.exe --seed 12345` ou `mine.exe --seed=12345`, permitindo reproduzir o mesmo mundo.
+- Chuva alternável com `T` e partículas visuais ao quebrar blocos.
+- Cristais luminosos coletáveis em campos de tundra, uma mecânica visual original do projeto; depois de minerados, podem ser recolocados como iluminação.
+- Ciclo contínuo de dia e noite com mudança do céu, sol, lua, estrelas noturnas e horário no HUD.
+- Iluminação direcional dinâmica calculada pela posição do sol.
+- Tochas emissoras no cenário e colocáveis pelo jogador, com iluminação artificial por distância reconstruída após cada alteração.
 - Um menu principal com os botões Jogar e Sair.
 - Um menu de pausa (ESC) com os botões Continuar, Instruções e Sair.
-- Uma mira fixa no centro, barra de nove itens com miniaturas tridimensionais dos blocos, quantidades e item selecionado.
+- Uma mira fixa no centro, barra de 13 itens com miniaturas tridimensionais dos blocos, quantidades e item selecionado; o HUD exibe FPS, seed, bioma, horário e posição.
+- A mira usa travessia DDA 3D, visitando apenas as células realmente atravessadas pelo raio.
 - Informações de FPS e posição do personagem no canto superior, sem alterar o título da janela.
 - Uma tela de instruções acessível pelo menu de pausa, com retorno por ESC, Enter ou Espaço.
 
-Tudo é feito com **um único cubo de lado 1**, desenhado várias vezes em posições diferentes. Os blocos do terreno são texturizados com um atlas pixelado; a água e o vidro são semitransparentes. Não há iluminação: cada face recebe um brilho fixo (topo claro, laterais médias, base escura), multiplicado pela textura, o que dá a impressão de volume. As nuvens e o personagem continuam com cor sólida.
+Tudo é feito com **um único cubo de lado 1**, desenhado várias vezes em posições diferentes. Os blocos do terreno são texturizados com um atlas pixelado; a água e o vidro são semitransparentes. Cada face combina o brilho direcional do ciclo dia/noite com fontes artificiais próximas, multiplicado pela textura. As nuvens e o personagem continuam com cor sólida.
 
 ## Conteúdos por aula
 
@@ -48,14 +94,14 @@ Tudo é feito com **um único cubo de lado 1**, desenhado várias vezes em posi�
 | 4 | Perspectiva, correção de proporção, câmera com `gluLookAt`, navegação pelo teclado | `aplicaProjecao`, `redimensiona`, `posicionaCamera` |
 | 5 | Teclado por estado e tempo de quadro; mouse com yaw e pitch e captura do cursor; matriz do mundo e colisão por caixa alinhada aos eixos; primeira e terceira pessoa; zoom pela roda | `teclado`, `tecladoSolto`, `atualiza`, `mundo`, `posicaoLivre`, `moveJogador`, `direcaoDoOlhar`, `movimentoMouse`, `posicionaCamera`, `desenhaJogador`, `rodaMouse` |
 | Texturas e transparência | Atlas lido de um PPM e enviado com `glTexImage2D`; células por face e `glTexCoord2f`; filtro `GL_NEAREST` (visual pixelado) e `GL_MODULATE`; alfa por cor-chave; recorte com `GL_ALPHA_TEST` nas folhas; mistura com `GL_BLEND` e `glDepthMask` no vidro e na água, em três passadas, com os semitransparentes ordenados; faces ocultas por vizinho opaco | `lerPPM`, `converteRGBA`, `carregaAtlas`, `celulaDaFace`, `coordenadasDaCelula`, `desenhaBloco`, `faceVisivel`, `facesVisiveis`, `desenhaOpacos`, `listaTransparentes`, `desenhaTransparentes`, `casinhaEm` |
-| Interface e estados | Passada 2D com as duas matrizes salvas; projeção em pixels; menu principal, jogo, pausa e instruções; cursor visível nos menus e capturado no jogo; botões com hover e clique; mira, barra de nove itens com miniaturas 3D, quantidades, seleção numérica/roda, FPS e posição | `iniciaInterface`, `terminaInterface`, `desenhaInterface`, `desenhaInstrucoes`, `movimentoInterface`, `cliqueMouse`, `estadoJogo`, `botaoSelecionado` |
+| Interface e estados | Passada 2D com as duas matrizes salvas; projeção em pixels; menu principal, jogo, pausa e instruções; cursor visível nos menus e capturado no jogo; botões com hover e clique; mira, barra de 13 itens com miniaturas 3D, quantidades, seleção numérica/roda, FPS e posição | `iniciaInterface`, `terminaInterface`, `desenhaInterface`, `desenhaInstrucoes`, `movimentoInterface`, `cliqueMouse`, `estadoJogo`, `botaoSelecionado` |
 
 ## Dependências
 
 - Compilador C (`gcc`)
 - OpenGL, GLU, GLUT (freeglut) e GLEW
 
-É preciso usar a **freeglut**, não outra GLUT: a roda do mouse usa `glutMouseWheelFunc`, que é extensão da freeglut, e descer com Shift usa `GLUT_KEY_SHIFT_L`, das versões mais novas dela (testado com a 3.4).
+É preciso usar a **freeglut**, não outra GLUT: a roda do mouse usa `glutMouseWheelFunc`, que é extensão da freeglut.
 
 **Ubuntu / Debian**
 ```bash
@@ -69,26 +115,58 @@ sudo pacman -S gcc freeglut glew glu
 
 **Windows**: use o MinGW com as bibliotecas freeglut e GLEW instaladas.
 
-**macOS**: não precisa instalar nada; o código usa a GLUT e o OpenGL que já vêm no sistema (blocos `#ifdef __APPLE__`). Essa GLUT não tem a roda do mouse nem avisa o Shift sozinho, então no Mac o zoom é só por `+`/`-` e descer é só pela seta ↓. O olhar pelo mouse também é tratado à parte: a GLUT da Apple trava o mouse por 0,25 s a cada reposicionamento do cursor, então no Mac o cursor é desacoplado do mouse e o deslocamento é lido direto do sistema (por isso o `-framework ApplicationServices`).
+**macOS**: não precisa instalar nada; o código usa a GLUT e o OpenGL que já vêm no sistema (blocos `#ifdef __APPLE__`). Essa GLUT não tem a roda do mouse, então no Mac o zoom é só por `+`/`-`. O olhar pelo mouse também é tratado à parte: a GLUT da Apple trava o mouse por 0,25 s a cada reposicionamento do cursor, então no Mac o cursor é desacoplado do mouse e o deslocamento é lido direto do sistema (por isso o `-framework ApplicationServices`).
 
 ## Como compilar e rodar
 
+O projeto também possui `CMakeLists.txt` e `Makefile` para reproduzir a
+compilação da versão principal e das quatro demonstrações. A compilação
+manual abaixo continua válida e é útil para conferir as bibliotecas da
+plataforma.
+
+Com CMake, a partir da pasta do projeto:
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+Os executáveis das demonstrações ficam em `build/demonstracao/`.
+
 **Linux**
 ```bash
-gcc mine.c -o mine -lGLEW -lGL -lGLU -lglut -lm
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -o mine -lGLEW -lGL -lGLU -lglut -lm
 ./mine
 ```
 
 **Windows (MinGW)**
 ```bash
 windres mine.rc -O coff -o mine.res.o
-gcc mine.c mine.res.o -o mine.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c mine.res.o -o mine.exe -lglew32 -lfreeglut -lopengl32 -lglu32
 mine.exe
+```
+
+Teste independente de geração procedural e chunks:
+
+```bash
+make test-worldgen
+```
+
+Teste de pilhas, ferramentas, durabilidade e cristal:
+
+```bash
+make test-inventory
+```
+
+Para executar toda a suíte independente da janela:
+
+```bash
+make test
 ```
 
 **macOS**
 ```bash
-clang mine.c -o mine -framework OpenGL -framework GLUT -framework ApplicationServices -lm
+clang mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -o mine -framework OpenGL -framework GLUT -framework ApplicationServices -lm
 ./mine
 ```
 
@@ -100,10 +178,10 @@ Use as mesmas macros e substitua o comando de compilação pelas bibliotecas da
 plataforma:
 
 ```sh
-gcc mine.c -DDEMO_UI_MATRIX_ONLY=1 -o demonstracao/mine-matriz -lGLEW -lGL -lGLU -lglut -lm
-gcc mine.c -DDEMO_UI_FIXED_BAR=1 -o demonstracao/mine-barra -lGLEW -lGL -lGLU -lglut -lm
-gcc mine.c -DDEMO_UI_RAW_MOUSE_Y=1 -o demonstracao/mine-mouse -lGLEW -lGL -lGLU -lglut -lm
-gcc mine.c -DDEMO_UI_PAUSE_CLOCK=1 -o demonstracao/mine-pausa -lGLEW -lGL -lGLU -lglut -lm
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_MATRIX_ONLY=1 -o demonstracao/mine-matriz -lGLEW -lGL -lGLU -lglut -lm
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_FIXED_BAR=1 -o demonstracao/mine-barra -lGLEW -lGL -lGLU -lglut -lm
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_RAW_MOUSE_Y=1 -o demonstracao/mine-mouse -lGLEW -lGL -lGLU -lglut -lm
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_PAUSE_CLOCK=1 -o demonstracao/mine-pausa -lGLEW -lGL -lGLU -lglut -lm
 ```
 
 Depois, execute o binário correspondente em `demonstracao/`. Para mostrar a
@@ -140,8 +218,17 @@ O formato PPM (`P6`) não tem canal alfa. Na leitura, o jogo transforma o magent
 | A / D | Andar para a esquerda / para a direita | estado |
 | R (segurando) | Correr (dobra a velocidade) | estado |
 | ← / → | Girar o olhar | estado |
-| Espaço ou ↑ / Shift ou ↓ | Subir / descer | estado |
+| Espaço ou ↑ | Saltar | estado |
+| F | Comer a maçã selecionada e recuperar fome | evento |
+| G | Atacar o inimigo à frente | evento |
+| F6 | Salvar o mundo em `savegame.dat` | evento |
+| F7 | Carregar o mundo salvo | evento |
+| T | Alternar chuva | evento |
 | Mouse | Direção do olhar (já começa capturado) | evento de movimento |
+| Clique esquerdo | Quebrar o bloco observado | evento |
+| Clique direito | Colocar o bloco selecionado | evento |
+| E | Abrir ou fechar o inventário | evento |
+| C (inventário) | Abrir a tela de crafting | evento |
 | Roda | Selecionar o próximo/anterior item | evento |
 | + / - | Aproximar / afastar (campo de visão) | evento |
 | Tab | Liberar / capturar o cursor (clicar na janela também captura) | evento |
@@ -149,19 +236,20 @@ O formato PPM (`P6`) não tem canal alfa. Na leitura, o jogo transforma o magent
 | P | Alternar perspectiva / ortográfica | evento |
 | ESC | Abrir / fechar a pausa ou voltar das instruções | evento |
 | 1 a 9 | Selecionar espaço da barra de itens | evento |
+| 0 | Selecionar a décima posição da barra (maçã) | evento |
 | Q (em um menu) | Sair | evento |
 
 A coluna "Leitura" diz como cada entrada é tratada: ações contínuas, que duram enquanto a tecla está pressionada, são lidas **por estado** a cada quadro; ações discretas, que acontecem uma vez por toque, são tratadas **por evento**.
 
-O jogo começa no menu principal, com o cursor livre. Ao clicar em Jogar, o personagem aparece no gramado, olhando para a montanha, com a câmera em terceira pessoa e o cursor capturado. Não há gravidade: para subir um degrau, use Espaço ou ↑. Durante o jogo, o mouse controla o olhar; Tab libera o cursor, e Tab ou um clique na janela o capturam de novo. ESC abre a pausa, que congela a atualização do jogo; nela, **INSTRUÇÕES** mostra todos os comandos e **CONTINUAR** retoma a partida.
+O jogo começa no menu principal, com o cursor livre. Ao clicar em Jogar, o personagem aparece no gramado, olhando para a montanha, com a câmera em terceira pessoa e o cursor capturado. Há gravidade e o personagem salta com Espaço ou ↑. Durante o jogo, o mouse controla o olhar; Tab libera o cursor, e Tab ou um clique na janela o capturam de novo. ESC abre a pausa, que congela a atualização do jogo; nela, **INSTRUÇÕES** mostra todos os comandos e **CONTINUAR** retoma a partida.
 
 ## Como o cenário é montado
 
 Os eixos do mundo são:
 
-- **x**: da esquerda (0) para a direita (15)
+- **x**: da esquerda (0) para a direita (63)
 - **y**: altura, a partir de 0, crescendo para cima
-- **z**: do fundo do mapa (0) para a frente (15), onde fica o mar
+- **z**: do fundo do mapa (0) para a frente (63), onde fica o mar
 
 ### O mapa
 
@@ -178,7 +266,7 @@ O acesso é `mapa[z][x]`, com a linha antes da coluna. Assim a tabela aparece no
 
 ### Do mapa aos blocos
 
-1. `construirMundo`, chamada uma única vez no início, percorre os 16 × 16 quadrados do mapa e chama `colunaEm(x, z)` para cada um.
+1. `construirMundo`, chamada uma única vez no início, percorre os 64 × 64 quadrados do mapa e chama `colunaEm(x, z)` para cada um.
 2. `colunaEm` lê a altura `h` no mapa e empilha blocos de `y = 0` até o topo. Para cada andar, uma sequência de `if` escolhe o tipo comparando `y` com `h`:
    - acima do chão e até o nível da água: **água**
    - coluna baixa: **areia**
@@ -200,7 +288,7 @@ A mistura do vidro e da água usa a cor que já está na tela, então a ordem de
 
 ### A matriz do mundo
 
-`mundo[x][y][z]` guarda o tipo de cada bloco (ou `VAZIO`) numa grade de 16 × 16 × 16. **Atenção à ordem**: o `mapa` é `[z][x]`, para parecer o mundo visto de cima, mas o `mundo` segue a ordem dos eixos, `[x][y][z]`. Todo acesso passa por `colocaBloco` e `blocoNoMundo`, que também testam os limites.
+`mundo[x][y][z]` guarda o tipo de cada bloco (ou `VAZIO`) numa grade de 64 × 16 × 64. Os primeiros 16 × 16 quadrados usam a matriz didática original; a extensão usa a seed `sementeMundo` e uma função procedural determinística. **Atenção à ordem**: o `mapa` é `[z][x]`, para parecer o mundo visto de cima, mas o `mundo` segue a ordem dos eixos, `[x][y][z]`. Todo acesso passa por `colocaBloco` e `blocoNoMundo`, que também testam os limites.
 
 A matriz é o que permite a colisão: a célula que contém um ponto `(px, py, pz)` é `(floor(px), floor(py), floor(pz))`, então saber se o personagem bate num bloco é consultar as poucas células que a caixa dele ocupa (`posicaoLivre`). Fora do mundo conta como sólido, e a água não é sólida.
 
@@ -222,19 +310,19 @@ As quatro demonstrações são modos temporários de compilação. Sem nenhuma m
 
 ```powershell
 # 1. Guardar somente GL_PROJECTION: a mira acompanha a câmera
-gcc mine.c -DDEMO_UI_MATRIX_ONLY=1 -o demonstracao\mine-matriz.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_MATRIX_ONLY=1 -o demonstracao\mine-matriz.exe -lglew32 -lfreeglut -lopengl32 -lglu32
 .\demonstracao\mine-matriz.exe
 
 # 2. Barra em posição fixa: ela sai do centro ao redimensionar
-gcc mine.c -DDEMO_UI_FIXED_BAR=1 -o demonstracao\mine-barra.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_FIXED_BAR=1 -o demonstracao\mine-barra.exe -lglew32 -lfreeglut -lopengl32 -lglu32
 .\demonstracao\mine-barra.exe
 
 # 3. Mouse sem converter a altura: clique e hover ficam espelhados
-gcc mine.c -DDEMO_UI_RAW_MOUSE_Y=1 -o demonstracao\mine-mouse.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_RAW_MOUSE_Y=1 -o demonstracao\mine-mouse.exe -lglew32 -lfreeglut -lopengl32 -lglu32
 .\demonstracao\mine-mouse.exe
 
 # 4. Pausa sem reiniciar o tempo: o personagem avança de uma vez ao voltar
-gcc mine.c -DDEMO_UI_PAUSE_CLOCK=1 -o demonstracao\mine-pausa.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_PAUSE_CLOCK=1 -o demonstracao\mine-pausa.exe -lglew32 -lfreeglut -lopengl32 -lglu32
 .\demonstracao\mine-pausa.exe
 ```
 

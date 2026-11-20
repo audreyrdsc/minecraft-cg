@@ -20,7 +20,8 @@
  *             mistura no vidro e na água, desenho em três passadas e
  *             remoção das faces que um vizinho opaco esconde
  *
- * Cenário: terreno 16 x 16 com uma montanha, uma praia e o mar,
+ * Cenário: terreno 64 x 64 com uma montanha, uma praia, o mar e uma
+ * extensão procedural,
  * uma árvore, uma casinha de vidro e duas nuvens. Tudo é feito com um
  * único cubo de lado 1, desenhado várias vezes em posições diferentes.
  *
@@ -29,17 +30,17 @@
  * projeto.
  *
  * Eixos do mundo:
- *   x  esquerda (0) para a direita (15)
+ *   x  esquerda (0) para a direita (63)
  *   y  altura: 0 é o fundo, cresce para cima
- *   z  fundo do mapa (0) para a frente (15), onde fica o mar
+ *   z  fundo do mapa (0) para a frente (63), onde fica o mar
  *
  * Controles:
  *   W / S        andar para frente / para trás
  *   A / D        andar para a esquerda / para a direita
  *   R            correr (segurando, junto com W, A, S, D)
  *   Setas < >    girar o olhar
- *   Espaço ou ^  subir
- *   Shift ou v   descer
+ *   Espaço ou ^  saltar
+ *   F             comer a maçã selecionada
  *   Mouse        direção do olhar (já começa capturado)
  *   Roda ou + -  aproximar / afastar (campo de visão)
  *   Tab          liberar / capturar o cursor; clique também captura
@@ -56,8 +57,7 @@
  * Compilar e rodar (Linux):
  *   gcc mine.c -o mine -lGLEW -lGL -lGLU -lglut -lm && ./mine
  *
- * Compilar e rodar (macOS, com a GLUT da Apple; sem roda do mouse e
- * sem Shift para descer):
+ * Compilar e rodar (macOS, com a GLUT da Apple; sem roda do mouse):
  *   clang mine.c -o mine -framework OpenGL -framework GLUT \
  *         -framework ApplicationServices -lm && ./mine
  */
@@ -85,6 +85,8 @@
 #include <stdio.h>              /* printf, sprintf */
 #include <stdlib.h>             /* exit */
 #include <math.h>               /* sinf, cosf, floorf, sqrtf, ceilf */
+#include <float.h>              /* FLT_MAX para eixos paralelos no DDA */
+#include <string.h>             /* strcmp para opções de inicialização */
 #include <ctype.h>              /* tolower */
 
 #define PI 3.14159265f
@@ -120,38 +122,14 @@
 /* PELE a OLHO não aparecem no mundo: são as cores do personagem.     */
 /* ------------------------------------------------------------------ */
 
-#define VAZIO   0
-#define GRAMA   1
-#define TERRA   2
-#define PEDRA   3
-#define TRONCO  4
-#define FOLHA   5
-#define AREIA   6
-#define AGUA    7
-#define NUVEM   8
-#define NEVE    9
-#define PELE    10
-#define CABELO  11
-#define CAMISA  12
-#define CALCA   13
-#define SAPATO  14
-#define OLHO_BRANCO 15
-#define OLHO    16
-#define VIDRO   17      /* semitransparente, da casinha de vidro */
-
 /* Em que passada de desenho cada tipo entra (ver desenhaOpacos):
    opacos primeiro, depois o recorte (folhas, com vazados) e por último
    os semitransparentes (vidro e água) */
-#define PASSADA_OPACA       0
-#define PASSADA_RECORTE     1
-#define PASSADA_TRANSLUCIDA 2
-
 /* ------------------------------------------------------------------ */
 /* Tamanho do mundo                                                   */
 /* ------------------------------------------------------------------ */
 
-#define LADO        16  /* o chão tem LADO x LADO quadrados (colunas) */
-#define ALTURA_MUNDO 16 /* andares em y, de 0 a 15 */
+#include "include/config.h"
 #define NIVEL_AGUA  1   /* colunas com altura até este valor são praia ou
                            mar; acima do chão delas, até esta altura, vai
                            água */
@@ -215,6 +193,20 @@
 #define DT_MAXIMO        0.1f   /* maior tempo de quadro aceito, em s */
 #define FATOR_CORRIDA    2.0f   /* segurando R, a velocidade dobra */
 #define PASSO_MAXIMO     0.5f   /* maior deslocamento testado de uma vez */
+#define GRAVIDADE        18.0f  /* aceleração vertical, em blocos/s² */
+#define VELOCIDADE_SALTO 7.0f   /* impulso vertical inicial */
+#define VELOCIDADE_QUEDA 30.0f  /* limite da velocidade de queda */
+#define VIDA_MAXIMA      20.0f  /* dez corações, como referência visual */
+#define FOME_MAXIMA      20.0f  /* dez ícones de alimento */
+#define FOME_DRENO       0.08f  /* pontos por segundo em repouso */
+#define CURA_MACA        6.0f   /* pontos restaurados por maçã */
+#define SATURACAO_MAXIMA 20.0f
+#define SATURACAO_MACA   4.0f
+#define FOME_MINIMA_CORRIDA 3.0f
+#define ALTURA_QUEDA_SEGURA 3.0f
+#define DURACAO_DIA       240.0f /* segundos de um ciclo completo */
+#define DISTANCIA_DESENHO 28.0f  /* culling simples para mundos maiores */
+#define DISTANCIA_CARGA_CHUNK 24.0f
 
 #define SENSIBILIDADE 0.1f      /* graus de giro por pixel de mouse */
 #define LIMITE_PITCH  89.0f     /* inclinação máxima, para cima e para baixo */
@@ -249,6 +241,7 @@
 
 #define FOV_MIN 20.0f
 #define FOV_MAX 90.0f
+#define MAX_LUZES 32
 
 
 /* ================================================================== */
@@ -288,6 +281,15 @@ typedef struct {
     float distancia;                /* ao olho, ao quadrado */
 } BlocoTransparente;
 #define MAX_TRANSPARENTES (LADO * ALTURA_MUNDO * LADO)
+#ifndef CHUNK_LADO
+#define CHUNK_LADO 16
+#define NUM_CHUNKS_X ((LADO + CHUNK_LADO - 1) / CHUNK_LADO)
+#define NUM_CHUNKS_Z ((LADO + CHUNK_LADO - 1) / CHUNK_LADO)
+#endif
+
+static GLuint listasChunks[NUM_CHUNKS_X][NUM_CHUNKS_Z][2];
+static int listasChunksInicializadas = 0;
+static int epocaLuzDasListas = -1;
 
 void desenhaOpacos(void);           /* passadas 1 (opacos) e 2 (recorte) */
 int  listaTransparentes(float olhoX, float olhoY, float olhoZ,
@@ -305,12 +307,39 @@ void posicaoDoOlho(float *x, float *y, float *z);
 extern unsigned char mundo[LADO][ALTURA_MUNDO][LADO];
 
 /* Barra de itens da Semana 10. Os nove tipos representam os blocos
-   utilizáveis; as quantidades são inicializadas a partir do mundo atual,
-   já que esta versão ainda não tinha os contadores da Semana 9. */
-#define NUM_ITENS 9
+   utilizáveis; as quantidades formam o estoque inicial do jogador e são
+   alteradas por colocação e coleta de drops. */
+#define NUM_ITENS 13
 extern const int tiposItens[NUM_ITENS];
 extern int quantidadesItens[NUM_ITENS];
 extern int itemSelecionado;
+extern int slotSelecionadoInventario;
+
+#define MAX_ITEM_STACK 64
+#define MAX_DROPS 128
+#define INVENTORY_SLOTS 36
+#include "include/game_types.h"
+#include "include/inventory.h"
+#include "include/crafting.h"
+#include "include/entities.h"
+#include "include/world.h"
+#include "include/worldgen.h"
+#include "include/save.h"
+#include "include/effects.h"
+#include "include/audio.h"
+#include "include/blocks.h"
+#include "include/chunks.h"
+#include "include/player.h"
+
+extern Inventory inventario;
+
+static int consomeAlimento(void);
+
+static LuzPonto luzes[MAX_LUZES];
+static int numeroLuzes = 0;
+static float pontoDesenhoX = 0.0f;
+static float pontoDesenhoY = 0.0f;
+static float pontoDesenhoZ = 0.0f;
 
 /* desenho de um bloco */
 void corDaFace(int tipo, float brilho, float tom);
@@ -334,10 +363,18 @@ void construirMundo(void);
  */
 /* posição do personagem; jogadorY é a altura dos PÉS (ver COLISÃO) */
 extern float jogadorX, jogadorY, jogadorZ;
+extern float tempoMundo;
+extern float fomeJogador;
+extern float saturacaoJogador;
 
 int  blocoSolido(int x, int y, int z);
 int  posicaoLivre(float x, float y, float z);
 void moveJogador(float dx, float dy, float dz);
+int  blocoMirado(HitBloco *hit);
+void interageComBloco(int botao);
+void atualizaDrops(float dt);
+void desenhaDrops(void);
+void reconstroiLuzes(void);
 
 /*
  * Orientação do olhar, lente (projeção), posição da câmera em primeira
@@ -353,6 +390,7 @@ extern float campoDeVisao;          /* graus */
 void aplicaProjecao(void);
 void redimensiona(int largura, int altura);
 void direcaoDoOlhar(float *dx, float *dy, float *dz);
+void direcaoDoRaio(float *dx, float *dy, float *dz);
 void desenhaJogador(void);
 void posicionaCamera(void);
 
@@ -391,7 +429,9 @@ typedef enum {
     ESTADO_MENU_PRINCIPAL,
     ESTADO_JOGANDO,
     ESTADO_PAUSADO,
-    ESTADO_INSTRUCOES
+    ESTADO_INSTRUCOES,
+    ESTADO_INVENTARIO,
+    ESTADO_CRAFTING
 } EstadoJogo;
 
 extern EstadoJogo estadoJogo;
@@ -407,6 +447,14 @@ void movimentoInterface(int x, int y);
 static int numeroBotoesTela(void);
 static void acionaBotaoTela(int indice);
 static int pontoNoBotao(int x, int y, int indice);
+static void desenhaInventario(void);
+static int slotInventarioEm(int x, int y);
+static void interageSlotInventario(int slot, int botao);
+static void desenhaCrafting(void);
+static void interageCrafting(int x, int y, int botao);
+static void desenhaAstros(void);
+static void desenhaSelecaoBloco(void);
+static void iniciaAnimacaoBraco(int tipo);
 
 
 /* ================================================================== */
@@ -528,6 +576,129 @@ typedef struct {
 TexturaUI texturaLogo;
 TexturaUI texturaSubtitulo;
 TexturaUI texturaVersao;
+TexturaUI texturaEspada;
+TexturaUI texturaPicareta;
+TexturaUI texturaFomeCheia;
+TexturaUI texturaFomeMeia;
+TexturaUI texturaFomeVazia;
+TexturaUI texturaCoracaoCheio;
+TexturaUI texturaCoracaoMeio;
+TexturaUI texturaCoracaoVazio;
+
+static GLuint shaderAgua = 0;
+static GLint shaderAguaTempo = -1;
+static GLint shaderAguaBloco = -1;
+
+static GLuint compilaShaderAgua(GLenum tipo, const char *fonte)
+{
+    GLuint shader = glCreateShader(tipo);
+    GLint compilou = GL_FALSE;
+
+    if (!shader) return 0;
+    glShaderSource(shader, 1, &fonte, NULL);
+    glCompileShader(shader);
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compilou);
+    if (!compilou) {
+        char log[1024];
+        GLsizei tamanho = 0;
+        glGetShaderInfoLog(shader, sizeof(log), &tamanho, log);
+        log[tamanho < (GLsizei)sizeof(log) ? tamanho : sizeof(log) - 1] = '\0';
+        printf("Shader da agua: %s\n", log);
+        fflush(stdout);
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+static void inicializaShaderAgua(void)
+{
+    static const char *vertexShader =
+        "#version 120\n"
+        "uniform float u_tempo;\n"
+        "uniform vec3 u_bloco;\n"
+        "varying vec2 v_uv;\n"
+        "varying vec4 v_cor;\n"
+        "varying vec3 v_mundo;\n"
+        "varying float v_topo;\n"
+        "void main() {\n"
+        "  vec4 p = gl_Vertex;\n"
+        "  float fase = (u_bloco.x + p.x) * 1.7 + (u_bloco.z + p.z) * 1.35 + u_tempo * 0.55;\n"
+        "  float topo = step(0.99, p.y);\n"
+        "  p.y += topo * (sin(fase) * 0.014 + cos(fase * 0.63) * 0.006);\n"
+        "  gl_Position = gl_ModelViewProjectionMatrix * p;\n"
+        "  v_uv = gl_MultiTexCoord0.st;\n"
+        "  v_cor = gl_Color;\n"
+        "  v_mundo = u_bloco + p.xyz;\n"
+        "  v_topo = topo;\n"
+        "}\n";
+    static const char *fragmentShader =
+        "#version 120\n"
+        "uniform sampler2D u_atlas;\n"
+        "uniform float u_tempo;\n"
+        "varying vec2 v_uv;\n"
+        "varying vec4 v_cor;\n"
+        "varying vec3 v_mundo;\n"
+        "varying float v_topo;\n"
+        "void main() {\n"
+        "  vec2 celula = floor(v_uv * 4.0) / 4.0;\n"
+        "  float onda = sin(v_mundo.x * 8.0 + v_mundo.z * 5.0 + u_tempo * 0.8);\n"
+        "  float onda2 = cos(v_mundo.x * 3.0 - v_mundo.z * 9.0 + u_tempo * 0.55);\n"
+        "  vec2 local = fract(v_uv * 4.0 + vec2(onda, onda2) * 0.035 + vec2(u_tempo * 0.004, u_tempo * 0.002));\n"
+        "  vec4 texel = texture2D(u_atlas, celula + local / 4.0);\n"
+        "  float textura = dot(texel.rgb, vec3(0.30, 0.59, 0.11));\n"
+        "  float movimento = 0.5 + 0.5 * onda;\n"
+        "  vec3 profundo = vec3(0.015, 0.12, 0.28);\n"
+        "  vec3 raso = vec3(0.035, 0.32, 0.48);\n"
+        "  vec3 agua = mix(profundo, raso, 0.34 + movimento * 0.22);\n"
+        "  agua += (texel.rgb - vec3(0.50)) * 0.08 * textura;\n"
+        "  float reflexo = pow(max(0.0, sin(v_mundo.x * 10.0 + v_mundo.z * 4.0 + u_tempo * 0.7)), 14.0);\n"
+        "  float faixa = pow(max(0.0, sin(v_mundo.x * 3.2 - v_mundo.z * 1.1 + u_tempo * 0.35)), 18.0);\n"
+        "  float brilho = pow(max(0.0, sin(v_mundo.x * 15.0 + v_mundo.z * 2.0 + u_tempo * 0.9)), 28.0);\n"
+        "  agua += vec3(0.30, 0.66, 0.78) * reflexo * v_topo * 0.32;\n"
+        "  agua += vec3(0.42, 0.82, 0.86) * faixa * v_topo * 0.28;\n"
+        "  agua += vec3(0.70, 0.92, 0.95) * brilho * v_topo * 0.12;\n"
+        "  float alpha = 0.42 + 0.10 * movimento * v_topo;\n"
+        "  gl_FragColor = vec4(agua * v_cor.rgb, texel.a * alpha);\n"
+        "}\n";
+    GLuint vs, fs;
+    GLint ligado = GL_FALSE;
+
+    if (shaderAgua || !glCreateShader) return;
+    vs = compilaShaderAgua(GL_VERTEX_SHADER, vertexShader);
+    fs = compilaShaderAgua(GL_FRAGMENT_SHADER, fragmentShader);
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return;
+    }
+
+    shaderAgua = glCreateProgram();
+    glAttachShader(shaderAgua, vs);
+    glAttachShader(shaderAgua, fs);
+    glLinkProgram(shaderAgua);
+    glGetProgramiv(shaderAgua, GL_LINK_STATUS, &ligado);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ligado) {
+        char log[1024];
+        GLsizei tamanho = 0;
+        glGetProgramInfoLog(shaderAgua, sizeof(log), &tamanho, log);
+        log[tamanho < (GLsizei)sizeof(log) ? tamanho : sizeof(log) - 1] = '\0';
+        printf("Programa da agua: %s\n", log);
+        fflush(stdout);
+        glDeleteProgram(shaderAgua);
+        shaderAgua = 0;
+        return;
+    }
+    shaderAguaTempo = glGetUniformLocation(shaderAgua, "u_tempo");
+    shaderAguaBloco = glGetUniformLocation(shaderAgua, "u_bloco");
+    glUseProgram(shaderAgua);
+    glUniform1i(glGetUniformLocation(shaderAgua, "u_atlas"), 0);
+    glUseProgram(0);
+    printf("Shader da agua ativo.\n");
+    fflush(stdout);
+}
 
 void carregaAtlas(void)
 {
@@ -578,6 +749,60 @@ static unsigned char *converteUIRGBA(const unsigned char *rgb, int l, int a)
     return rgba;
 }
 
+static TexturaUI carregaUmaTexturaPAM(const char *nome)
+{
+    TexturaUI resultado = { 0, 0, 0 };
+    FILE *arquivo = fopen(nome, "rb");
+    char linha[128];
+    int profundidade = 0, maximo = 0;
+    unsigned char *rgba;
+    size_t esperado, lidos;
+
+    if (!arquivo || !fgets(linha, sizeof(linha), arquivo) ||
+        strncmp(linha, "P7", 2) != 0) {
+        if (arquivo) fclose(arquivo);
+        printf("Erro: não consegui ler %s\n", nome);
+        exit(1);
+    }
+    while (fgets(linha, sizeof(linha), arquivo)) {
+        if (strncmp(linha, "WIDTH", 5) == 0)
+            sscanf(linha + 5, "%d", &resultado.largura);
+        else if (strncmp(linha, "HEIGHT", 6) == 0)
+            sscanf(linha + 6, "%d", &resultado.altura);
+        else if (strncmp(linha, "DEPTH", 5) == 0)
+            sscanf(linha + 5, "%d", &profundidade);
+        else if (strncmp(linha, "MAXVAL", 6) == 0)
+            sscanf(linha + 6, "%d", &maximo);
+        else if (strncmp(linha, "ENDHDR", 6) == 0)
+            break;
+    }
+    if (resultado.largura <= 0 || resultado.altura <= 0 || profundidade != 4 ||
+        maximo != 255) {
+        fclose(arquivo);
+        printf("Erro: formato inválido em %s\n", nome);
+        exit(1);
+    }
+    esperado = (size_t)resultado.largura * (size_t)resultado.altura * 4u;
+    rgba = malloc(esperado);
+    lidos = rgba ? fread(rgba, 1, esperado, arquivo) : 0;
+    fclose(arquivo);
+    if (!rgba || lidos != esperado) {
+        free(rgba);
+        printf("Erro: dados incompletos em %s\n", nome);
+        exit(1);
+    }
+
+    glGenTextures(1, &resultado.id);
+    glBindTexture(GL_TEXTURE_2D, resultado.id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, resultado.largura,
+                 resultado.altura, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    free(rgba);
+    return resultado;
+}
+
 static TexturaUI carregaUmaTexturaUI(const char *nome)
 {
     TexturaUI resultado = { 0, 0, 0 };
@@ -612,6 +837,14 @@ void carregaTexturasUI(void)
     texturaLogo = carregaUmaTexturaUI("assets/ui/ui_logo.ppm");
     texturaSubtitulo = carregaUmaTexturaUI("assets/ui/ui_subtitulo.ppm");
     texturaVersao = carregaUmaTexturaUI("assets/ui/ui_versao.ppm");
+    texturaEspada = carregaUmaTexturaPAM("assets/ui/espada.pam");
+    texturaPicareta = carregaUmaTexturaPAM("assets/ui/picareta.pam");
+    texturaFomeCheia = carregaUmaTexturaPAM("assets/ui/fome_cheia.pam");
+    texturaFomeMeia = carregaUmaTexturaPAM("assets/ui/fome_meia.pam");
+    texturaFomeVazia = carregaUmaTexturaPAM("assets/ui/fome_vazia.pam");
+    texturaCoracaoCheio = carregaUmaTexturaPAM("assets/ui/coracao_cheio.pam");
+    texturaCoracaoMeio = carregaUmaTexturaPAM("assets/ui/coracao_meio.pam");
+    texturaCoracaoVazio = carregaUmaTexturaPAM("assets/ui/coracao_vazio.pam");
 }
 
 /* ------------------------------------------------------------------ */
@@ -687,6 +920,7 @@ int passadaDoBloco(int tipo)
 /* 1 se o bloco esconde por completo o que está atrás dele */
 int blocoOpaco(int tipo)
 {
+    if (tipo == TOCHA) return 0; /* tocha é um objeto, não um cubo cheio */
     return tipo != VAZIO && passadaDoBloco(tipo) == PASSADA_OPACA;
 }
 
@@ -722,12 +956,16 @@ int facesVisiveis(int x, int y, int z)
     int tipo = blocoNoMundo(x, y, z);
     int faces = 0;
 
+    if (cacheFacesValido(x, y, z))
+        return obtemFacesCache(x, y, z);
+
     if (faceVisivel(tipo, blocoNoMundo(x, y, z + 1))) faces |= FACE_FRENTE;
     if (faceVisivel(tipo, blocoNoMundo(x, y, z - 1))) faces |= FACE_TRAS;
     if (faceVisivel(tipo, blocoNoMundo(x + 1, y, z))) faces |= FACE_DIREITA;
     if (faceVisivel(tipo, blocoNoMundo(x - 1, y, z))) faces |= FACE_ESQUERDA;
     if (faceVisivel(tipo, blocoNoMundo(x, y + 1, z))) faces |= FACE_TOPO;
     if (faceVisivel(tipo, blocoNoMundo(x, y - 1, z))) faces |= FACE_BASE;
+    gravaFacesCache(x, y, z, faces);
     return faces;
 }
 
@@ -787,17 +1025,63 @@ void casinhaEm(int x, int z)
 /* contra o vidro: desapareceria.                                     */
 /* ------------------------------------------------------------------ */
 
-/* desenha todos os blocos de uma passada, na ordem da matriz */
+static void constroiListaChunk(int chunkX, int chunkZ)
+{
+    int passada, x, y, z;
+
+    for (passada = PASSADA_OPACA; passada <= PASSADA_RECORTE; passada++) {
+        glNewList(listasChunks[chunkX][chunkZ][passada], GL_COMPILE);
+        for (x = chunkX * CHUNK_LADO;
+             x < (chunkX + 1) * CHUNK_LADO && x < LADO; x++)
+            for (y = 0; y < ALTURA_MUNDO; y++)
+                for (z = chunkZ * CHUNK_LADO;
+                     z < (chunkZ + 1) * CHUNK_LADO && z < LADO; z++)
+                    if (mundo[x][y][z] != VAZIO &&
+                        passadaDoBloco(mundo[x][y][z]) == passada)
+                        blocoEm(mundo[x][y][z], x, y, z);
+        glEndList();
+    }
+    limpaMarcaChunk(chunkX, chunkZ);
+}
+
+static void preparaListasChunks(void)
+{
+    int x, z;
+    int epoca = (int)floorf(tempoMundo * 96.0f);
+
+    if (!listasChunksInicializadas) {
+        for (x = 0; x < NUM_CHUNKS_X; x++)
+            for (z = 0; z < NUM_CHUNKS_Z; z++)
+                for (int passada = PASSADA_OPACA;
+                     passada <= PASSADA_RECORTE; passada++)
+                    listasChunks[x][z][passada] = glGenLists(1);
+        listasChunksInicializadas = 1;
+        epocaLuzDasListas = -1;
+    }
+    if (epoca != epocaLuzDasListas) {
+        marcaTodosChunksSujo();
+        epocaLuzDasListas = epoca;
+    }
+}
+
+/* desenha todos os chunks visíveis usando listas reconstruídas sob demanda */
 static void desenhaPassada(int passada)
 {
-    int x, y, z;
+    int chunkX, chunkZ;
+    float olhoX, olhoY, olhoZ;
 
-    for (x = 0; x < LADO; x++)
-        for (y = 0; y < ALTURA_MUNDO; y++)
-            for (z = 0; z < LADO; z++)
-                if (mundo[x][y][z] != VAZIO &&
-                    passadaDoBloco(mundo[x][y][z]) == passada)
-                    blocoEm(mundo[x][y][z], x, y, z);
+    posicaoDoOlho(&olhoX, &olhoY, &olhoZ);
+    preparaListasChunks();
+
+    for (chunkX = 0; chunkX < NUM_CHUNKS_X; chunkX++)
+        for (chunkZ = 0; chunkZ < NUM_CHUNKS_Z; chunkZ++)
+            if (chunkVisivel(chunkX, chunkZ, olhoX, olhoZ,
+                             DISTANCIA_DESENHO))
+                {
+                    if (chunkEstaSujo(chunkX, chunkZ))
+                        constroiListaChunk(chunkX, chunkZ);
+                    glCallList(listasChunks[chunkX][chunkZ][passada]);
+                }
 }
 
 /* passadas 1 e 2 */
@@ -832,22 +1116,33 @@ static int maisDistantePrimeiro(const void *a, const void *b)
 int listaTransparentes(float olhoX, float olhoY, float olhoZ,
                        BlocoTransparente *lista)
 {
-    int x, y, z, n = 0;
+    int chunkX, chunkZ, x, y, z, n = 0;
 
-    for (x = 0; x < LADO; x++)
-        for (y = 0; y < ALTURA_MUNDO; y++)
-            for (z = 0; z < LADO; z++)
-                if (passadaDoBloco(mundo[x][y][z]) == PASSADA_TRANSLUCIDA) {
-                    float dx = x + 0.5f - olhoX;
-                    float dy = y + 0.5f - olhoY;
-                    float dz = z + 0.5f - olhoZ;
+    for (chunkX = 0; chunkX < NUM_CHUNKS_X; chunkX++)
+        for (chunkZ = 0; chunkZ < NUM_CHUNKS_Z; chunkZ++)
+            if (chunkVisivel(chunkX, chunkZ, olhoX, olhoZ,
+                             DISTANCIA_DESENHO))
+                for (x = chunkX * CHUNK_LADO;
+                     x < (chunkX + 1) * CHUNK_LADO && x < LADO; x++)
+                    for (y = 0; y < ALTURA_MUNDO; y++)
+                        for (z = chunkZ * CHUNK_LADO;
+                             z < (chunkZ + 1) * CHUNK_LADO && z < LADO; z++)
+                            if (passadaDoBloco(mundo[x][y][z]) == PASSADA_TRANSLUCIDA) {
+                                float dx = x + 0.5f - olhoX;
+                                float dy = y + 0.5f - olhoY;
+                                float dz = z + 0.5f - olhoZ;
 
-                    lista[n].x = x;
-                    lista[n].y = y;
-                    lista[n].z = z;
-                    lista[n].distancia = dx * dx + dy * dy + dz * dz;
-                    n++;
-                }
+                                if (dx * dx + dy * dy + dz * dz >
+                                    DISTANCIA_DESENHO * DISTANCIA_DESENHO)
+                                    continue;
+
+                                if (n >= MAX_TRANSPARENTES) continue;
+                                lista[n].x = x;
+                                lista[n].y = y;
+                                lista[n].z = z;
+                                lista[n].distancia = dx * dx + dy * dy + dz * dz;
+                                n++;
+                            }
 
     qsort(lista, n, sizeof(BlocoTransparente), maisDistantePrimeiro);
     return n;
@@ -879,12 +1174,86 @@ void desenhaTransparentes(void)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
 
-    for (i = 0; i < n; i++)
-        blocoEm(blocoNoMundo(transparentes[i].x, transparentes[i].y, transparentes[i].z),
-                transparentes[i].x, transparentes[i].y, transparentes[i].z);
+    for (i = 0; i < n; i++) {
+        int tipo = blocoNoMundo(transparentes[i].x,
+                                transparentes[i].y,
+                                transparentes[i].z);
+        if (tipo == AGUA && shaderAgua) {
+            glUseProgram(shaderAgua);
+            glUniform1f(shaderAguaTempo, tempoMundo * DURACAO_DIA);
+            glUniform3f(shaderAguaBloco,
+                        (float)transparentes[i].x,
+                        (float)transparentes[i].y,
+                        (float)transparentes[i].z);
+        } else {
+            glUseProgram(0);
+        }
+        blocoEm(tipo, transparentes[i].x, transparentes[i].y,
+                transparentes[i].z);
+    }
+
+    glUseProgram(0);
 
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
+}
+
+/* Contorno do alvo do raycast e prévia da célula de colocação. */
+static void desenhaContornoCubo(int x, int y, int z, float escala,
+                                float r, float g, float b)
+{
+    float minimoX = x + 0.5f - escala;
+    float maximoX = x + 0.5f + escala;
+    float minimoY = y + 0.5f - escala;
+    float maximoY = y + 0.5f + escala;
+    float minimoZ = z + 0.5f - escala;
+    float maximoZ = z + 0.5f + escala;
+
+    glColor3f(r, g, b);
+    glBegin(GL_LINES);
+    glVertex3f(minimoX, minimoY, minimoZ); glVertex3f(maximoX, minimoY, minimoZ);
+    glVertex3f(maximoX, minimoY, minimoZ); glVertex3f(maximoX, minimoY, maximoZ);
+    glVertex3f(maximoX, minimoY, maximoZ); glVertex3f(minimoX, minimoY, maximoZ);
+    glVertex3f(minimoX, minimoY, maximoZ); glVertex3f(minimoX, minimoY, minimoZ);
+    glVertex3f(minimoX, maximoY, minimoZ); glVertex3f(maximoX, maximoY, minimoZ);
+    glVertex3f(maximoX, maximoY, minimoZ); glVertex3f(maximoX, maximoY, maximoZ);
+    glVertex3f(maximoX, maximoY, maximoZ); glVertex3f(minimoX, maximoY, maximoZ);
+    glVertex3f(minimoX, maximoY, maximoZ); glVertex3f(minimoX, maximoY, minimoZ);
+    glVertex3f(minimoX, minimoY, minimoZ); glVertex3f(minimoX, maximoY, minimoZ);
+    glVertex3f(maximoX, minimoY, minimoZ); glVertex3f(maximoX, maximoY, minimoZ);
+    glVertex3f(maximoX, minimoY, maximoZ); glVertex3f(maximoX, maximoY, maximoZ);
+    glVertex3f(minimoX, minimoY, maximoZ); glVertex3f(minimoX, maximoY, maximoZ);
+    glEnd();
+}
+
+static void desenhaSelecaoBloco(void)
+{
+    HitBloco hit;
+    int tipo;
+
+    if (!blocoMirado(&hit)) return;
+
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_LIGHTING);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glLineWidth(2.0f);
+
+    /* Amarelo: bloco que será removido com o botão esquerdo. */
+    desenhaContornoCubo(hit.x, hit.y, hit.z, 0.507f,
+                        1.0f, 0.78f, 0.08f);
+
+    /* Ciano: célula adjacente que receberá o item com o botão direito. */
+    tipo = tiposItens[itemSelecionado];
+    if (tipo != MACA && tipo != PICARETA && tipo != ESPADA &&
+        quantidadesItens[itemSelecionado] > 0 &&
+        dentroDoMundo(hit.adjX, hit.adjY, hit.adjZ) &&
+        blocoNoMundo(hit.adjX, hit.adjY, hit.adjZ) == VAZIO)
+        desenhaContornoCubo(hit.adjX, hit.adjY, hit.adjZ, 0.503f,
+                            0.20f, 0.90f, 1.0f);
+
+    glDepthMask(GL_TRUE);
+    glLineWidth(1.0f);
 }
 
 /* ------------------------------------------------------------------ */
@@ -944,6 +1313,13 @@ void corDaFace(int tipo, float brilho, float tom)
         case SAPATO:  r = 0.35f; g = 0.35f; b = 0.35f; break;
         case OLHO_BRANCO: r = 0.95f; g = 0.95f; b = 0.95f; break;
         case OLHO:    r = 0.30f; g = 0.25f; b = 0.65f; break;
+        case TOCHA:   r = 1.00f; g = 0.34f; b = 0.04f; break;
+        case MACA:    r = 0.88f; g = 0.08f; b = 0.06f; break;
+        case MINERIO_CARVAO: r = 0.08f; g = 0.08f; b = 0.09f; break;
+        case MINERIO_FERRO:  r = 0.62f; g = 0.65f; b = 0.68f; break;
+        case PICARETA:       r = 0.36f; g = 0.23f; b = 0.12f; break;
+        case ESPADA:         r = 0.72f; g = 0.78f; b = 0.86f; break;
+        case CRISTAL:        r = 0.18f; g = 0.82f; b = 0.95f; break;
         default:     r = 1.00f; g = 0.00f; b = 1.00f; break;   /* rosa = tipo desconhecido */
     }
 
@@ -962,9 +1338,8 @@ void corDaFace(int tipo, float brilho, float tom)
 /* faces diz quais faces desenhar (soma de bits FACE_): blocoEm()     */
 /* pula as que um vizinho esconde; o personagem pede TODAS_FACES.     */
 /*                                                                    */
-/* Brilho: ainda não há iluminação, então cada face recebe            */
-/* um brilho fixo: topo claro, laterais médias, base escura. Isso dá  */
-/* a impressão de volume.                                             */
+/* Brilho por face: combina a orientação da face, a posição aparente do
+   sol e as fontes artificiais próximas, preservando o estilo facetado. */
 /*                                                                    */
 /* Textura: antes de cada glVertex3f vai um glTexCoord2f, com o canto */
 /* correspondente da célula da face. A coordenada de textura é estado */
@@ -981,7 +1356,51 @@ static const int bitDaFace[6] = {
     FACE_FRENTE, FACE_TRAS, FACE_DIREITA, FACE_ESQUERDA, FACE_TOPO, FACE_BASE
 };
 
-static const float brilhoDaFace[6] = { 0.80f, 0.80f, 0.65f, 0.65f, 1.00f, 0.50f };
+static float brilhoDaFaceAtual(int face)
+{
+    static const float normalX[6] = { 0, 0, 1, -1, 0, 0 };
+    static const float normalY[6] = { 0, 0, 0, 0, 1, -1 };
+    static const float normalZ[6] = { 1, -1, 0, 0, 0, 0 };
+    float angulo = tempoMundo * 2.0f * PI;
+    float luzX = cosf(angulo);
+    float luzY = sinf(angulo);
+    float luzZ = 0.35f;
+    float comprimento = sqrtf(luzX * luzX + luzY * luzY + luzZ * luzZ);
+    float dia = sinf(angulo);
+    float difusa, ambiente, brilho;
+    int i;
+
+    luzX /= comprimento;
+    luzY /= comprimento;
+    luzZ /= comprimento;
+    if (dia < 0.0f) dia = 0.0f;
+
+    ambiente = 0.12f + 0.12f * (1.0f - dia);
+    difusa = 0.78f * dia *
+             (normalX[face] * luzX + normalY[face] * luzY + normalZ[face] * luzZ);
+    if (difusa < 0.0f) difusa = 0.0f;
+    brilho = ambiente + difusa;
+
+    /* Luzes artificiais são avaliadas por distância. A contribuição é
+       aditiva, portanto várias tochas próximas se combinam naturalmente. */
+    for (i = 0; i < numeroLuzes; i++) {
+        float dx = pontoDesenhoX - luzes[i].x;
+        float dy = pontoDesenhoY - luzes[i].y;
+        float dz = pontoDesenhoZ - luzes[i].z;
+        float distancia = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (distancia < luzes[i].alcance)
+            brilho += luzes[i].intensidade *
+                      (1.0f - distancia / luzes[i].alcance);
+    }
+
+    if (face == 5) brilho *= 0.60f;
+    else if (face == 0 || face == 1) brilho *= 0.88f;
+    else if (face == 2 || face == 3) brilho *= 0.78f;
+
+    if (brilho < 0.10f) brilho = 0.10f;
+    if (brilho > 1.0f) brilho = 1.0f;
+    return brilho;
+}
 
 static const float verticesDaFace[6][4][3] = {
     { {0,0,1}, {1,0,1}, {1,1,1}, {0,1,1} },     /* frente (z = 1) */
@@ -1007,7 +1426,7 @@ void desenhaBloco(int tipo, float tom, int faces)
 
         if (texturizado) {
             float s0, t0, lado;
-            float b = brilhoDaFace[f];
+            float b = brilhoDaFaceAtual(f);
 
             coordenadasDaCelula(celulaDaFace(tipo, bitDaFace[f]), &s0, &t0, &lado);
             /* s e t de cada canto, na ordem dos vértices da tabela:
@@ -1022,7 +1441,7 @@ void desenhaBloco(int tipo, float tom, int faces)
                            verticesDaFace[f][v][2]);
             }
         } else {
-            corDaFace(tipo, brilhoDaFace[f], tom);
+            corDaFace(tipo, brilhoDaFaceAtual(f), tom);
             for (v = 0; v < 4; v++)
                 glVertex3f(verticesDaFace[f][v][0], verticesDaFace[f][v][1],
                            verticesDaFace[f][v][2]);
@@ -1046,6 +1465,33 @@ void desenhaBloco(int tipo, float tom, int faces)
 /* grade, sem buracos.                                                */
 /* ------------------------------------------------------------------ */
 
+static void desenhaTocha(float tom)
+{
+    /* haste: estreita, centralizada na célula e apoiada no bloco */
+    glPushMatrix();
+    glTranslatef(0.43f, 0.0f, 0.43f);
+    glScalef(0.14f, 0.70f, 0.14f);
+    desenhaBloco(TRONCO, tom, TODAS_FACES);
+    glPopMatrix();
+
+    /* chama em dois volumes pequenos, mais próxima da proporção da
+       referência e sem esconder o bloco de apoio. */
+    glDisable(GL_TEXTURE_2D);
+    glColor3f(1.0f, 0.25f, 0.02f);
+    glPushMatrix();
+    glTranslatef(0.50f, 0.78f, 0.50f);
+    glScalef(0.24f, 0.22f, 0.24f);
+    glutSolidCube(1.0f);
+    glPopMatrix();
+    glColor3f(1.0f, 0.78f, 0.08f);
+    glPushMatrix();
+    glTranslatef(0.50f, 0.92f, 0.50f);
+    glScalef(0.13f, 0.10f, 0.13f);
+    glutSolidCube(1.0f);
+    glPopMatrix();
+    glEnable(GL_TEXTURE_2D);
+}
+
 void blocoEm(int tipo, int x, int y, int z)
 {
     /* soma par: tom normal; soma ímpar: um pouco mais escuro (xadrez).
@@ -1054,11 +1500,18 @@ void blocoEm(int tipo, int x, int y, int z)
     float tom = ((x + y + z) % 2 == 0) ? 1.0f : 0.92f;
     int faces = facesVisiveis(x, y, z);     /* sem as que um vizinho esconde */
 
-    if (faces == 0) return;                 /* bloco enterrado: nada a desenhar */
+    if (faces == 0 && tipo != TOCHA)
+        return;                             /* bloco enterrado: nada a desenhar */
 
+    pontoDesenhoX = x + 0.5f;
+    pontoDesenhoY = y + 0.5f;
+    pontoDesenhoZ = z + 0.5f;
     glPushMatrix();
     glTranslatef((float)x, (float)y, (float)z);
-    desenhaBloco(tipo, tom, faces);
+    if (tipo == TOCHA)
+        desenhaTocha(tom);
+    else
+        desenhaBloco(tipo, tom, faces);
     glPopMatrix();
 }
 
@@ -1108,7 +1561,9 @@ int mapa[LADO][LADO] = {
    cima. */
 int alturaDoTerreno(int x, int z)
 {
-    return mapa[z][x];
+    if (x < 16 && z < 16) return mapa[z][x];
+
+    return alturaProcedural(x, z);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1119,28 +1574,177 @@ int alturaDoTerreno(int x, int z)
 /* blocoNoMundo(), que testam os limites.                             */
 /* ------------------------------------------------------------------ */
 
-unsigned char mundo[LADO][ALTURA_MUNDO][LADO];
-
-/* 1 se (x, y, z) é uma posição válida da matriz                      */
-int dentroDoMundo(int x, int y, int z)
+/* Procura o primeiro bloco não vazio usando travessia DDA 3D. O algoritmo
+   visita cada célula atravessada pelo raio, sem amostrar repetidamente a
+   mesma célula; isso reduz o custo da mineração e funciona bem nas bordas
+   entre chunks. */
+static int raioAtingeJogador(float ox, float oy, float oz,
+                             float dx, float dy, float dz,
+                             float *entrada)
 {
-    return x >= 0 && x < LADO &&
-           y >= 0 && y < ALTURA_MUNDO &&
-           z >= 0 && z < LADO;
+    float minimo[3] = { jogadorX - LARGURA_JOGADOR / 2.0f,
+                        jogadorY, jogadorZ - LARGURA_JOGADOR / 2.0f };
+    float maximo[3] = { jogadorX + LARGURA_JOGADOR / 2.0f,
+                        jogadorY + ALTURA_JOGADOR,
+                        jogadorZ + LARGURA_JOGADOR / 2.0f };
+    float origem[3] = { ox, oy, oz };
+    float direcao[3] = { dx, dy, dz };
+    float tEntrada = 0.0f, tSaida = 8.0f;
+    int eixo;
+
+    for (eixo = 0; eixo < 3; eixo++) {
+        float t1, t2, temporario;
+        if (fabsf(direcao[eixo]) < 0.00001f) {
+            if (origem[eixo] < minimo[eixo] || origem[eixo] > maximo[eixo])
+                return 0;
+            continue;
+        }
+        t1 = (minimo[eixo] - origem[eixo]) / direcao[eixo];
+        t2 = (maximo[eixo] - origem[eixo]) / direcao[eixo];
+        if (t1 > t2) {
+            temporario = t1;
+            t1 = t2;
+            t2 = temporario;
+        }
+        if (t1 > tEntrada) tEntrada = t1;
+        if (t2 < tSaida) tSaida = t2;
+        if (tEntrada > tSaida) return 0;
+    }
+    *entrada = tEntrada < 0.0f ? 0.0f : tEntrada;
+    return 1;
 }
 
-/* Grava um bloco na matriz; posições fora do mundo são ignoradas     */
-void colocaBloco(int tipo, int x, int y, int z)
+int blocoMirado(HitBloco *hit)
 {
-    if (dentroDoMundo(x, y, z))
-        mundo[x][y][z] = (unsigned char)tipo;
+    float olhoX, olhoY, olhoZ, dx, dy, dz;
+    float limiteJogador = FLT_MAX;
+    int x, y, z, anteriorX, anteriorY, anteriorZ;
+    int passoX, passoY, passoZ;
+    float t = 0.0f, tMaxX, tMaxY, tMaxZ;
+    float tDeltaX, tDeltaY, tDeltaZ;
+
+    hit->encontrado = 0;
+    posicaoDoOlho(&olhoX, &olhoY, &olhoZ);
+    direcaoDoRaio(&dx, &dy, &dz);
+    if (modoCamera == TERCEIRA_PESSOA)
+        raioAtingeJogador(olhoX, olhoY, olhoZ, dx, dy, dz,
+                          &limiteJogador);
+
+    x = (int)floorf(olhoX);
+    y = (int)floorf(olhoY);
+    z = (int)floorf(olhoZ);
+    anteriorX = x; anteriorY = y; anteriorZ = z;
+
+    passoX = dx >= 0.0f ? 1 : -1;
+    passoY = dy >= 0.0f ? 1 : -1;
+    passoZ = dz >= 0.0f ? 1 : -1;
+    tDeltaX = fabsf(dx) > 0.00001f ? 1.0f / fabsf(dx) : FLT_MAX;
+    tDeltaY = fabsf(dy) > 0.00001f ? 1.0f / fabsf(dy) : FLT_MAX;
+    tDeltaZ = fabsf(dz) > 0.00001f ? 1.0f / fabsf(dz) : FLT_MAX;
+    tMaxX = fabsf(dx) > 0.00001f
+          ? (passoX > 0 ? (x + 1.0f - olhoX) : (olhoX - x)) / fabsf(dx)
+          : FLT_MAX;
+    tMaxY = fabsf(dy) > 0.00001f
+          ? (passoY > 0 ? (y + 1.0f - olhoY) : (olhoY - y)) / fabsf(dy)
+          : FLT_MAX;
+    tMaxZ = fabsf(dz) > 0.00001f
+          ? (passoZ > 0 ? (z + 1.0f - olhoZ) : (olhoZ - z)) / fabsf(dz)
+          : FLT_MAX;
+
+    while (t <= 8.0f) {
+        int tipo = blocoNoMundo(x, y, z);
+        if (t >= limiteJogador - 0.0001f)
+            return 0;
+        if (tipo != VAZIO) {
+            hit->encontrado = 1;
+            hit->x = x; hit->y = y; hit->z = z;
+            hit->adjX = anteriorX; hit->adjY = anteriorY; hit->adjZ = anteriorZ;
+            hit->tipo = tipo;
+            return 1;
+        }
+
+        anteriorX = x; anteriorY = y; anteriorZ = z;
+        if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+            x += passoX;
+            t = tMaxX;
+            tMaxX += tDeltaX;
+        } else if (tMaxY < tMaxZ) {
+            y += passoY;
+            t = tMaxY;
+            tMaxY += tDeltaY;
+        } else {
+            z += passoZ;
+            t = tMaxZ;
+            tMaxZ += tDeltaZ;
+        }
+    }
+    return 0;
 }
 
-/* Lê um bloco da matriz; fora do mundo não há bloco                  */
-int blocoNoMundo(int x, int y, int z)
+/* Interação de mineração/construção. O raycast seleciona o primeiro bloco
+   visível e os botões do mouse quebram, coletam e colocam itens da hotbar. */
+void interageComBloco(int botao)
 {
-    if (!dentroDoMundo(x, y, z)) return VAZIO;
-    return mundo[x][y][z];
+    HitBloco hit;
+
+    /* A maçã é consumida com o botão direito, sem depender de haver um
+       bloco na mira. O F continua funcionando como atalho de teclado. */
+    if (botao == GLUT_RIGHT_BUTTON && tiposItens[itemSelecionado] == MACA) {
+        iniciaAnimacaoBraco(1);
+        consomeAlimento();
+        return;
+    }
+
+    /* O ataque desarmado também é permitido. Se houver um inimigo na
+       linha da mira, o clique vira ataque; caso contrário continua sendo
+       mineração. A espada apenas aumenta o dano e gasta durabilidade. */
+    if (botao == GLUT_LEFT_BUTTON ||
+        (botao == GLUT_RIGHT_BUTTON && tiposItens[itemSelecionado] == ESPADA)) {
+        iniciaAnimacaoBraco(1);
+        if (atacaInimigo()) return;
+    }
+
+    if (!blocoMirado(&hit)) return;
+
+    if (botao == GLUT_LEFT_BUTTON) {
+        if ((hit.tipo == MINERIO_CARVAO || hit.tipo == MINERIO_FERRO) &&
+            tiposItens[itemSelecionado] != PICARETA)
+            return;
+        if (tiposItens[itemSelecionado] == PICARETA &&
+            !gastaDurabilidade(PICARETA))
+            return;
+        criaDrop(hit.tipo, hit.x + 0.5f, hit.y + 0.5f, hit.z + 0.5f);
+        audioQuebraBloco(hit.tipo);
+        emiteParticulasBloco(hit.x + 0.5f, hit.y + 0.5f, hit.z + 0.5f, hit.tipo);
+        /* Folhas podem soltar maçãs, criando uma fonte renovável simples
+           de alimento sem introduzir ainda um sistema de entidades. */
+        if (hit.tipo == FOLHA &&
+            (hit.x + hit.y + hit.z) % 4 == 0)
+            criaDrop(MACA, hit.x + 0.5f, hit.y + 0.8f, hit.z + 0.5f);
+        colocaBloco(VAZIO, hit.x, hit.y, hit.z);
+        reconstroiLuzes();
+    } else if (botao == GLUT_RIGHT_BUTTON) {
+        int indice = itemSelecionado;
+        int tipo = tiposItens[indice];
+
+        /* Alimentos são itens de uso, não blocos da matriz do mundo. */
+        if (tipo == MACA || tipo == PICARETA || tipo == ESPADA) return;
+
+        if (quantidadesItens[indice] <= 0 ||
+            !dentroDoMundo(hit.adjX, hit.adjY, hit.adjZ) ||
+            blocoNoMundo(hit.adjX, hit.adjY, hit.adjZ) != VAZIO)
+            return;
+
+        if (!posicaoLivre(jogadorX, jogadorY, jogadorZ)) return;
+        colocaBloco(tipo, hit.adjX, hit.adjY, hit.adjZ);
+        if (!posicaoLivre(jogadorX, jogadorY, jogadorZ)) {
+            colocaBloco(VAZIO, hit.adjX, hit.adjY, hit.adjZ);
+            return;
+        }
+        removeDoInventario(tipo, 1);
+        iniciaAnimacaoBraco(2);
+        reconstroiLuzes();
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1168,17 +1772,32 @@ int blocoNoMundo(int x, int y, int z)
 void colunaEm(int x, int z)
 {
     int h = alturaDoTerreno(x, z);
+    int procedural = x >= 16 || z >= 16;
+    int bioma = procedural ? biomaProcedural(x, z) : 0;
     int y;
 
     /* sobe até o topo da coluna, ou até o nível da água se ela for mais
        baixa, para preencher o mar */
     for (y = 0; y <= h || y <= NIVEL_AGUA; y++) {
-        if (y > h)                colocaBloco(AGUA,  x, y, z);
-        else if (h <= NIVEL_AGUA) colocaBloco(AREIA, x, y, z);
-        else if (y == h && h >= NIVEL_NEVE) colocaBloco(NEVE, x, y, z);
-        else if (y == h)          colocaBloco(GRAMA, x, y, z);
-        else if (y >= h - 2)      colocaBloco(TERRA, x, y, z);
-        else                      colocaBloco(PEDRA, x, y, z);
+        int minerio = procedural ? minerioProcedural(x, y, z) : 0;
+        if (procedural && y > 1 && y < h - 1 &&
+            cavernaProcedural(x, y, z)) {
+            colocaBloco(VAZIO, x, y, z);
+        } else if (y > h) {
+            colocaBloco(AGUA, x, y, z);
+        } else if (h <= NIVEL_AGUA || (bioma == 1 && y >= h - 3)) {
+            colocaBloco(AREIA, x, y, z);
+        } else if (y == h && (h >= NIVEL_NEVE || bioma == 2)) {
+            colocaBloco(NEVE, x, y, z);
+        } else if (y == h) {
+            colocaBloco(GRAMA, x, y, z);
+        } else if (minerio != 0) {
+            colocaBloco(minerio, x, y, z);
+        } else if (y >= h - 2) {
+            colocaBloco(TERRA, x, y, z);
+        } else {
+            colocaBloco(PEDRA, x, y, z);
+        }
     }
 }
 
@@ -1244,6 +1863,34 @@ void nuvemEm(int x, int z, int largura, int fundo)
             colocaBloco(NUVEM, x + dx, ALTURA_NUVEM, z + dz);
 }
 
+static void adicionaLuz(float x, float y, float z,
+                        float intensidade, float alcance)
+{
+    if (numeroLuzes >= MAX_LUZES) return;
+    luzes[numeroLuzes].x = x;
+    luzes[numeroLuzes].y = y;
+    luzes[numeroLuzes].z = z;
+    luzes[numeroLuzes].intensidade = intensidade;
+    luzes[numeroLuzes].alcance = alcance;
+    numeroLuzes++;
+}
+
+void reconstroiLuzes(void)
+{
+    int x, y, z;
+
+    numeroLuzes = 0;
+    for (x = 0; x < LADO; x++)
+        for (y = 0; y < ALTURA_MUNDO; y++)
+            for (z = 0; z < LADO; z++)
+                if (mundo[x][y][z] == TOCHA)
+                adicionaLuz(x + 0.5f, y + 0.5f, z + 0.5f,
+                                0.85f, 6.0f);
+                else if (mundo[x][y][z] == CRISTAL)
+                    adicionaLuz(x + 0.5f, y + 0.5f, z + 0.5f,
+                                0.45f, 4.0f);
+}
+
 /* ------------------------------------------------------------------ */
 /* Preenche a matriz uma vez, no início: zera tudo e coloca o         */
 /* terreno, a árvore, a casinha de vidro e as nuvens. A árvore e a   */
@@ -1263,30 +1910,219 @@ void construirMundo(void)
         for (z = 0; z < LADO; z++)
             colunaEm(x, z);
 
+    /* Duas tochas de demonstração para que a iluminação artificial seja
+       perceptível mesmo antes de existir a colocação de tochas pelo jogador. */
+    colocaBloco(TOCHA, 3, 5, 7);
+    colocaBloco(TOCHA, 9, 3, 10);
+
     arvoreEm(13, 6);                        /* no gramado, à direita da montanha */
     casinhaEm(4, 7);                        /* à esquerda de onde o personagem começa */
+    arvoreEm(24, 7);                         /* extensão procedural do mundo */
+    arvoreEm(27, 20);
+    casinhaEm(20, 17);
+
+    /* Vegetação determinística nas áreas de floresta da extensão. */
+    for (x = 18; x < LADO - 2; x += 4)
+        for (z = 2; z < LADO - 2; z += 5)
+            if (biomaProcedural(x, z) == 3 && alturaDoTerreno(x, z) > NIVEL_AGUA)
+                arvoreEm(x, z);
+
+    /* Cristais luminosos são uma assinatura original do projeto: surgem
+       em pequenos campos de tundra e iluminam o terreno à noite. */
+    for (x = 18; x < LADO - 1; x += 5)
+        for (z = 3; z < LADO - 1; z += 6)
+            if (biomaProcedural(x, z) == 2) {
+                int cristalY = alturaDoTerreno(x, z) + 1;
+                if (cristalY < ALTURA_MUNDO)
+                    colocaBloco(CRISTAL, x, cristalY, z);
+            }
 
     nuvemEm(1, 2, 5, 3);                    /* sobre a montanha */
     nuvemEm(10, 0, 4, 2);                   /* sobre a árvore, mais ao fundo */
+    nuvemEm(21, 8, 6, 3);                   /* sobre a extensão */
+
+    reconstroiLuzes();
 }
 
 const int tiposItens[NUM_ITENS] = {
-    GRAMA, TERRA, PEDRA, TRONCO, FOLHA, AREIA, AGUA, NEVE, VIDRO
+    GRAMA, TERRA, PEDRA, TRONCO, FOLHA, AREIA, TOCHA, NEVE, VIDRO, MACA,
+    PICARETA, ESPADA, CRISTAL
 };
 int quantidadesItens[NUM_ITENS] = { 0 };
 int itemSelecionado = 0;
+int slotSelecionadoInventario = -1;
+Inventory inventario;
+ItemStack gradeCrafting[4];
+ItemStack resultadoCrafting = { VAZIO, 0, 0 };
 
-static void contaItensDoMundo(void)
+static int consomeAlimento(void)
 {
-    int i, x, y, z;
+    if (fomeJogador >= FOME_MAXIMA || itemSelecionado < 0 ||
+        itemSelecionado >= NUM_ITENS || tiposItens[itemSelecionado] != MACA ||
+        quantidadesItens[itemSelecionado] <= 0)
+        return 0;
 
-    for (i = 0; i < NUM_ITENS; i++) quantidadesItens[i] = 0;
-    for (x = 0; x < LADO; x++)
-        for (y = 0; y < ALTURA_MUNDO; y++)
-            for (z = 0; z < LADO; z++)
-                for (i = 0; i < NUM_ITENS; i++)
-                    if (mundo[x][y][z] == tiposItens[i])
-                        quantidadesItens[i]++;
+    if (!removeDoInventario(MACA, 1)) return 0;
+    audioComer();
+    fomeJogador += CURA_MACA;
+    if (fomeJogador > FOME_MAXIMA) fomeJogador = FOME_MAXIMA;
+    saturacaoJogador += SATURACAO_MACA;
+    if (saturacaoJogador > fomeJogador) saturacaoJogador = fomeJogador;
+    return 1;
+}
+
+static void interageSlotInventario(int slot, int botao)
+{
+    ItemStack *origem;
+    ItemStack *destino;
+
+    if (slot < 0 || slot >= INVENTORY_SLOTS) return;
+
+    if (slotSelecionadoInventario < 0) {
+        if (inventario.slots[slot].quantidade > 0)
+            slotSelecionadoInventario = slot;
+        return;
+    }
+
+    if (slotSelecionadoInventario == slot) {
+        slotSelecionadoInventario = -1;
+        return;
+    }
+
+    origem = &inventario.slots[slotSelecionadoInventario];
+    destino = &inventario.slots[slot];
+
+    if (botao == GLUT_RIGHT_BUTTON) {
+        if (origem->quantidade > 0 &&
+            (destino->quantidade == 0 || destino->tipo == origem->tipo) &&
+            destino->quantidade < MAX_ITEM_STACK) {
+            destino->tipo = origem->tipo;
+            destino->quantidade++;
+            origem->quantidade--;
+            if (origem->quantidade == 0) {
+                origem->tipo = VAZIO;
+                slotSelecionadoInventario = -1;
+            }
+        }
+    } else if (destino->quantidade == 0) {
+        *destino = *origem;
+        origem->tipo = VAZIO;
+        origem->quantidade = 0;
+        slotSelecionadoInventario = -1;
+    } else if (destino->tipo == origem->tipo &&
+               destino->quantidade < MAX_ITEM_STACK) {
+        int espaco = MAX_ITEM_STACK - destino->quantidade;
+        int movido = origem->quantidade < espaco
+                    ? origem->quantidade : espaco;
+        destino->quantidade += movido;
+        origem->quantidade -= movido;
+        if (origem->quantidade == 0) {
+            origem->tipo = VAZIO;
+            slotSelecionadoInventario = -1;
+        }
+    } else {
+        ItemStack temporario = *destino;
+        *destino = *origem;
+        *origem = temporario;
+        slotSelecionadoInventario = -1;
+    }
+
+    if (slot < NUM_ITENS) itemSelecionado = slot;
+    sincronizaHotbar();
+}
+
+static int slotCraftingEm(int x, int y)
+{
+    const int origemX = 260, origemY = 470, lado = 58, espaco = 6;
+    int coluna, linha;
+
+    y = alturaJanela - y;
+    x -= origemX;
+    y -= origemY;
+    if (x < 0 || y < 0) return -1;
+    coluna = x / (lado + espaco);
+    linha = y / (lado + espaco);
+    if (coluna < 0 || coluna >= 2 || linha < 0 || linha >= 2) return -1;
+    if (x % (lado + espaco) >= lado || y % (lado + espaco) >= lado) return -1;
+    return linha * 2 + coluna;
+}
+
+static void interageCrafting(int x, int y, int botao)
+{
+    const int invX = 220, invY = 72, lado = 58, espaco = 6;
+    int slotCraft = slotCraftingEm(x, y);
+    int i, slotInventario = -1;
+
+    /* saída: um clique fabrica a receita e consome os ingredientes. */
+    if (x >= 520 && x <= 520 + lado &&
+        alturaJanela - y >= 470 && alturaJanela - y <= 470 + lado &&
+        resultadoCrafting.quantidade > 0) {
+        if (adicionaAoInventario(resultadoCrafting.tipo, resultadoCrafting.quantidade)
+            == resultadoCrafting.quantidade)
+            consomeReceita();
+        return;
+    }
+
+    if (slotCraft >= 0) {
+        ItemStack *slot = &gradeCrafting[slotCraft];
+        int pedido = botao == GLUT_RIGHT_BUTTON ? 1 : slot->quantidade;
+        int devolvido = 0;
+        if (slot->quantidade > 0) {
+            devolvido = adicionaAoInventario(slot->tipo, pedido);
+            slot->quantidade -= devolvido;
+            if (slot->quantidade == 0) slot->tipo = VAZIO;
+            if (devolvido > 0) atualizaReceita();
+        }
+        return;
+    }
+
+    /* Os 36 slots do inventário ocupam quatro linhas na parte inferior. */
+    y = alturaJanela - y;
+    x -= invX;
+    y -= invY;
+    if (x < 0 || y < 0) return;
+    {
+        int coluna = x / (lado + espaco);
+        int linha = y / (lado + espaco);
+        if (coluna < 0 || coluna >= 9 || linha < 0 || linha >= 4) return;
+        if (x % (lado + espaco) >= lado || y % (lado + espaco) >= lado) return;
+        slotInventario = linha * 9 + coluna;
+    }
+
+    if (inventario.slots[slotInventario].quantidade <= 0) return;
+    for (i = 0; i < 4; i++)
+        if (gradeCrafting[i].quantidade == 0) {
+            gradeCrafting[i].tipo = inventario.slots[slotInventario].tipo;
+            gradeCrafting[i].quantidade = 1;
+            removeDoInventario(gradeCrafting[i].tipo, 1);
+            atualizaReceita();
+            return;
+        }
+}
+
+static void iniciaInventario(void)
+{
+    /* Estoque inicial pequeno e previsível. Os blocos do mapa não são mais
+       tratados como inventário: só entram na barra quando são coletados. */
+    int i;
+    slotSelecionadoInventario = -1;
+    for (i = 0; i < INVENTORY_SLOTS; i++) {
+        inventario.slots[i].tipo = VAZIO;
+        inventario.slots[i].quantidade = 0;
+    }
+
+    adicionaAoInventario(GRAMA, 64);
+    adicionaAoInventario(TERRA, 64);
+    adicionaAoInventario(PEDRA, 64);
+    adicionaAoInventario(TRONCO, 32);
+    adicionaAoInventario(FOLHA, 32);
+    adicionaAoInventario(AREIA, 32);
+    adicionaAoInventario(TOCHA, 8);
+    adicionaAoInventario(NEVE, 32);
+    adicionaAoInventario(VIDRO, 16);
+    adicionaAoInventario(MACA, 12);
+    adicionaAoInventario(PICARETA, 1);
+    adicionaAoInventario(ESPADA, 1);
 }
 
 
@@ -1305,87 +2141,16 @@ static void contaItensDoMundo(void)
 /* Só moveJogador() a altera, sempre depois de testar a colisão.      */
 /* ------------------------------------------------------------------ */
 
-float jogadorX = 8.5f;  /* começa no gramado, no meio em x,        */
-float jogadorY = 3.0f;  /* com os pés sobre a grama (coluna de     */
-float jogadorZ = 10.5f; /* altura 2, chão em y = 3); com yaw 0,    */
-                        /* olha para a montanha                    */
+/* Começa no meio do dia: sin(0.25 * 2*pi) = 1, céu claro e sol alto. */
+float tempoMundo = 0.25f;      /* 0..1: posição dentro do ciclo */
+static float tempoDanoFome = 0.0f;
+float tempoRegeneracaoJogador = 0.0f;
 
 /* ------------------------------------------------------------------ */
 /* Uma célula impede a passagem? Fora do mundo conta como sólido      */
 /* (paredes nas bordas, piso e teto); dentro, VAZIO e AGUA deixam     */
 /* passar.                                                            */
 /* ------------------------------------------------------------------ */
-
-int blocoSolido(int x, int y, int z)
-{
-    int tipo;
-
-    if (!dentroDoMundo(x, y, z)) return 1;  /* fora do mundo: parede */
-
-    tipo = mundo[x][y][z];
-    return tipo != VAZIO && tipo != AGUA;
-}
-
-/* ------------------------------------------------------------------ */
-/* Detecção de colisão: a caixa do personagem (AABB, alinhada aos     */
-/* eixos, sem girar) com os pés em (x, y, z) toca algum bloco sólido? */
-/* Em cada eixo a caixa cobre as células de floor(min) a floor(max),  */
-/* e basta consultar essas células na matriz (no máximo 12).          */
-/*                                                                    */
-/* floorf, e não (int), porque o cast erra para coordenadas           */
-/* negativas. FOLGA para que encostar numa face não conte como        */
-/* sobrepor.                                                          */
-/* ------------------------------------------------------------------ */
-
-#define FOLGA 0.001f    /* encostar não é sobrepor */
-
-int posicaoLivre(float x, float y, float z)
-{
-    float meia = LARGURA_JOGADOR / 2.0f;
-    int x0 = (int)floorf(x - meia), x1 = (int)floorf(x + meia - FOLGA);
-    int y0 = (int)floorf(y),        y1 = (int)floorf(y + ALTURA_JOGADOR - FOLGA);
-    int z0 = (int)floorf(z - meia), z1 = (int)floorf(z + meia - FOLGA);
-    int cx, cy, cz;
-
-    for (cx = x0; cx <= x1; cx++)
-        for (cy = y0; cy <= y1; cy++)
-            for (cz = z0; cz <= z1; cz++)
-                if (blocoSolido(cx, cy, cz))
-                    return 0;               /* a caixa toca um bloco sólido */
-    return 1;
-}
-
-/* ------------------------------------------------------------------ */
-/* Resposta à colisão: o movimento é testado antes de ser aplicado,   */
-/* um eixo por vez (x, z, y). Se um eixo bloqueia, os outros          */
-/* continuam, e o personagem desliza rente à parede em vez de travar  */
-/* na diagonal.                                                       */
-/*                                                                    */
-/* Deslocamentos maiores que PASSO_MAXIMO são divididos em pedaços,   */
-/* para nenhum teste saltar por cima de uma parede (tunelamento).     */
-/* ------------------------------------------------------------------ */
-
-/* Aplica um pedaço do deslocamento, já pequeno o bastante para não
-   atravessar paredes */
-static void movePedaco(float dx, float dy, float dz)
-{
-    if (posicaoLivre(jogadorX + dx, jogadorY, jogadorZ)) jogadorX += dx;
-    if (posicaoLivre(jogadorX, jogadorY, jogadorZ + dz)) jogadorZ += dz;
-    if (posicaoLivre(jogadorX, jogadorY + dy, jogadorZ)) jogadorY += dy;
-}
-
-void moveJogador(float dx, float dy, float dz)
-{
-    float comprimento = sqrtf(dx * dx + dy * dy + dz * dz);
-    int pedacos = (int)ceilf(comprimento / PASSO_MAXIMO);
-    int i;
-
-    if (pedacos < 1) pedacos = 1;           /* parado: um pedaço nulo */
-
-    for (i = 0; i < pedacos; i++)
-        movePedaco(dx / pedacos, dy / pedacos, dz / pedacos);
-}
-
 
 /* ================================================================== */
 /* CÂMERA                                                             */
@@ -1407,6 +2172,8 @@ void moveJogador(float dx, float dy, float dz)
 float yaw   = 0.0f;
 float pitch = 0.0f;
 int modoCamera = TERCEIRA_PESSOA;    /* começa vendo o personagem */
+static float tempoAnimacaoBraco = 0.0f;
+static int tipoAnimacaoBraco = 0;    /* 1: ataque, 2: colocação */
 
 /* ------------------------------------------------------------------ */
 /* Janela e projeção                                                  */
@@ -1478,6 +2245,41 @@ void direcaoDoOlhar(float *dx, float *dy, float *dz)
     *dz = -cosf(ry) * cosf(rp);
 }
 
+/* Direção que realmente atravessa o centro da tela. Em primeira pessoa
+   ela coincide com yaw/pitch; em terceira pessoa é a direção entre o
+   olho deslocado e o alvo usado por gluLookAt. */
+void direcaoDoRaio(float *dx, float *dy, float *dz)
+{
+    if (modoCamera == PRIMEIRA_PESSOA) {
+        direcaoDoOlhar(dx, dy, dz);
+    } else {
+        float olhoX, olhoY, olhoZ;
+        float alvoX = jogadorX;
+        float alvoY = jogadorY + ALTURA_OLHOS;
+        float alvoZ = jogadorZ;
+        float comprimento;
+
+        posicaoDoOlho(&olhoX, &olhoY, &olhoZ);
+        direcaoDoOlhar(dx, dy, dz);
+        alvoY += *dy * DISTANCIA_CAMERA;
+        *dx = alvoX - olhoX;
+        *dy = alvoY - olhoY;
+        *dz = alvoZ - olhoZ;
+        comprimento = sqrtf(*dx * *dx + *dy * *dy + *dz * *dz);
+        if (comprimento > 0.0001f) {
+            *dx /= comprimento;
+            *dy /= comprimento;
+            *dz /= comprimento;
+        }
+    }
+}
+
+static void iniciaAnimacaoBraco(int tipo)
+{
+    tipoAnimacaoBraco = tipo;
+    tempoAnimacaoBraco = 0.36f;
+}
+
 /* ------------------------------------------------------------------ */
 /* Personagem, desenhado só em terceira pessoa, como modelo           */
 /* hierárquico. O corpo é levado aos pés do jogador e girado por      */
@@ -1523,6 +2325,32 @@ static void membro(float x, float y, float angulo, float largura,
     glPopMatrix();
 }
 
+static void desenhaFerramentaNaMao(float angulo)
+{
+    int tipo = tiposItens[itemSelecionado];
+
+    if (tipo != PICARETA && tipo != ESPADA) return;
+
+    glPushMatrix();
+    glTranslatef(0.20f, 2.0f * COMPRIMENTO_MEMBRO, -0.08f);
+    glRotatef(angulo, 1.0f, 0.0f, 0.0f);
+    glTranslatef(0.0f, -COMPRIMENTO_MEMBRO - 0.08f, -0.08f);
+
+    if (tipo == PICARETA) {
+        /* Cabo marrom e cabeça metálica em forma de T. */
+        caixa(PICARETA, -0.045f, -0.48f, -0.045f,
+              0.09f, 0.62f, 0.09f);
+        caixa(ESPADA, -0.30f, 0.08f, -0.045f,
+              0.60f, 0.10f, 0.09f);
+    } else {
+        caixa(PICARETA, -0.045f, -0.48f, -0.045f,
+              0.09f, 0.62f, 0.09f);
+        caixa(ESPADA, -0.07f, 0.10f, -0.035f,
+              0.14f, 0.48f, 0.07f);
+    }
+    glPopMatrix();
+}
+
 void desenhaJogador(void)
 {
     float quadril = COMPRIMENTO_MEMBRO;                 /* altura das articulações */
@@ -1532,6 +2360,11 @@ void desenhaJogador(void)
     float xPerna = LARGURA_PERNA / 2.0f;                /* centro de cada perna */
     float xBraco = (LARGURA_TRONCO + LARGURA_BRACO) / 2.0f;
     float angulo = BALANCO_MAXIMO * amplitudeCaminhada * sinf(faseCaminhada);
+    float gestoBraco = 0.0f;
+
+    if (tempoAnimacaoBraco > 0.0f)
+        gestoBraco = sinf((1.0f - tempoAnimacaoBraco / 0.36f) * PI) *
+                     (tipoAnimacaoBraco == 1 ? 82.0f : 48.0f);
 
     glPushMatrix();
     glTranslatef(jogadorX, jogadorY, jogadorZ);         /* pés, centro da caixa */
@@ -1547,7 +2380,9 @@ void desenhaJogador(void)
 
     /* braços: manga curta e mão, em sentido oposto à perna do mesmo lado */
     membro(-xBraco, ombro, -angulo, LARGURA_BRACO, CAMISA, PELE, 0.45f);
-    membro( xBraco, ombro,  angulo, LARGURA_BRACO, CAMISA, PELE, 0.45f);
+    membro( xBraco, ombro,  angulo + gestoBraco,
+            LARGURA_BRACO, CAMISA, PELE, 0.45f);
+    desenhaFerramentaNaMao(angulo + gestoBraco);
 
     /* cabeça, de ombro até ombro + LADO_CABECA (perto de ALTURA_JOGADOR) */
     caixa(PELE, -meiaCabeca, ombro, -meiaCabeca,
@@ -1673,11 +2508,51 @@ void teclado(unsigned char tecla, int x, int y)
         return;
     }
 
+    if (estadoJogo == ESTADO_INVENTARIO) {
+        if (tecla == 27 || tolower(tecla) == 'e') {
+            estadoJogo = ESTADO_JOGANDO;
+            capturaCursor();
+        } else if (tolower(tecla) == 'c') {
+            limpaCrafting();
+            estadoJogo = ESTADO_CRAFTING;
+        }
+        glutPostRedisplay();
+        return;
+    }
+
+    if (estadoJogo == ESTADO_CRAFTING) {
+        if (tecla == 27 || tolower(tecla) == 'c') {
+            estadoJogo = ESTADO_INVENTARIO;
+        } else if (tolower(tecla) == 'e') {
+            estadoJogo = ESTADO_JOGANDO;
+            capturaCursor();
+        }
+        glutPostRedisplay();
+        return;
+    }
+
     switch (tolower(tecla)) {               /* evento: para as ações discretas */
         case 27:  abreMenu(); break;        /* ESC: menu de pausa */
+        case 'e':
+            estadoJogo = ESTADO_INVENTARIO;
+            liberaCursor();
+            break;
         case '1': case '2': case '3': case '4': case '5':
         case '6': case '7': case '8': case '9':
             itemSelecionado = tolower(tecla) - '1';
+            break;
+        case '0':
+            itemSelecionado = NUM_ITENS - 1;
+            break;
+        case 'f':
+            consomeAlimento();
+            break;
+        case 'g':
+            iniciaAnimacaoBraco(1);
+            atacaInimigo();
+            break;
+        case 't':
+            alternaChuva();
             break;
         case 9:   alternaCaptura(); break;  /* 9 é o código da tecla Tab */
         case 'p':
@@ -1708,6 +2583,10 @@ void especial(int tecla, int x, int y)
     if (tecla == GLUT_KEY_F5 && estadoJogo == ESTADO_JOGANDO)
         modoCamera = (modoCamera == PRIMEIRA_PESSOA) ? TERCEIRA_PESSOA
                                                      : PRIMEIRA_PESSOA;
+    if (tecla == GLUT_KEY_F6 && estadoJogo == ESTADO_JOGANDO)
+        printf("Jogo salvo: %s\n", salvaJogo("savegame.dat") ? "ok" : "erro");
+    if (tecla == GLUT_KEY_F7 && estadoJogo == ESTADO_JOGANDO)
+        printf("Jogo carregado: %s\n", carregaJogo("savegame.dat") ? "ok" : "erro");
 }
 
 void especialSolto(int tecla, int x, int y)
@@ -1821,6 +2700,20 @@ void cliqueMouse(int botao, int estado, int x, int y)
 {
     if (estado != GLUT_DOWN) return;
 
+    if (estadoJogo == ESTADO_INVENTARIO) {
+        if (botao == GLUT_LEFT_BUTTON || botao == GLUT_RIGHT_BUTTON)
+            interageSlotInventario(slotInventarioEm(x, y), botao);
+        glutPostRedisplay();
+        return;
+    }
+
+    if (estadoJogo == ESTADO_CRAFTING) {
+        if (botao == GLUT_LEFT_BUTTON || botao == GLUT_RIGHT_BUTTON)
+            interageCrafting(x, y, botao);
+        glutPostRedisplay();
+        return;
+    }
+
     if (estadoJogo == ESTADO_MENU_PRINCIPAL ||
         estadoJogo == ESTADO_PAUSADO ||
         estadoJogo == ESTADO_INSTRUCOES) {
@@ -1839,7 +2732,14 @@ void cliqueMouse(int botao, int estado, int x, int y)
     }
 
     (void)x; (void)y;
-    if (!cursorCapturado) capturaCursor();
+    if (!cursorCapturado) {
+        capturaCursor();
+        return;
+    }
+    if (botao == GLUT_LEFT_BUTTON || botao == GLUT_RIGHT_BUTTON) {
+        interageComBloco(botao);
+        glutPostRedisplay();
+    }
 }
 
 /* O cursor entrou na janela (por exemplo, depois de trocar de janela
@@ -1916,9 +2816,23 @@ void atualiza(void)
     }
 #endif
 
+    if (tempoAnimacaoBraco > 0.0f) {
+        tempoAnimacaoBraco -= dt;
+        if (tempoAnimacaoBraco <= 0.0f) {
+            tempoAnimacaoBraco = 0.0f;
+            tipoAnimacaoBraco = 0;
+        }
+    }
+
+    tempoMundo += dt / DURACAO_DIA;
+    while (tempoMundo >= 1.0f) tempoMundo -= 1.0f;
+    while (tempoMundo < 0.0f) tempoMundo += 1.0f;
+    audioAtualizaNoite(sinf(tempoMundo * 2.0f * PI) < 0.0f);
+
     float passo = VELOCIDADE * dt;
     float giro  = VELOCIDADE_GIRO * dt;
-    if (teclas['r']) passo *= FATOR_CORRIDA;    /* correr */
+    if (teclas['r'] && fomeJogador >= FOME_MINIMA_CORRIDA)
+        passo *= FATOR_CORRIDA;                 /* correr */
 
     if (especiais[GLUT_KEY_LEFT])  yaw -= giro;
     if (especiais[GLUT_KEY_RIGHT]) yaw += giro;
@@ -1939,30 +2853,105 @@ void atualiza(void)
         mz /= comprimento;
     }
 
-    /* Shift: a GLUT original não avisa quando só o Shift é pressionado,
-       mas a freeglut (a partir da 3.0) o entrega como tecla especial,
-       GLUT_KEY_SHIFT_L ou _R, e ele entra em especiais[] como as setas */
-    int sobe  = especiais[GLUT_KEY_UP]   || teclas[' '];
-#ifdef __APPLE__
-    int desce = especiais[GLUT_KEY_DOWN];
-#else
-    int desce = especiais[GLUT_KEY_DOWN] || especiais[GLUT_KEY_SHIFT_L]
-                                         || especiais[GLUT_KEY_SHIFT_R];
-#endif
-    float subir = (float)(sobe - desce);
+    /* A fome diminui lentamente e acelera durante o deslocamento/corrida.
+       Em zero, o jogador sofre dano periódico até se alimentar ou morrer. */
+    {
+        float multiplicadorFome = comprimento > 0.0f ? 1.5f : 1.0f;
+        if (teclas['r'] && comprimento > 0.0f &&
+            fomeJogador >= FOME_MINIMA_CORRIDA)
+            multiplicadorFome = 3.0f;
+        {
+            float gasto = FOME_DRENO * multiplicadorFome * dt;
+            float usadoSaturacao = gasto < saturacaoJogador
+                                  ? gasto : saturacaoJogador;
+            saturacaoJogador -= usadoSaturacao;
+            fomeJogador -= gasto - usadoSaturacao;
+        }
+        if (fomeJogador < 0.0f) fomeJogador = 0.0f;
+        if (saturacaoJogador < 0.0f) saturacaoJogador = 0.0f;
+        if (saturacaoJogador > fomeJogador) saturacaoJogador = fomeJogador;
+        if (fomeJogador <= 0.0f) {
+            tempoDanoFome += dt;
+            if (tempoDanoFome >= 1.0f) {
+                vidaJogador -= 1.0f;
+                audioDano();
+                tempoDanoFome = 0.0f;
+            }
+        } else {
+            tempoDanoFome = 0.0f;
+        }
 
-    float antesX = jogadorX, antesZ = jogadorZ;
-    moveJogador(mx * passo, subir * passo, mz * passo);
+        if (fomeJogador >= 18.0f && vidaJogador < VIDA_MAXIMA) {
+            tempoRegeneracaoJogador += dt;
+            if (tempoRegeneracaoJogador >= 4.0f) {
+                vidaJogador += 1.0f;
+                if (vidaJogador > VIDA_MAXIMA) vidaJogador = VIDA_MAXIMA;
+                if (saturacaoJogador >= 1.0f) saturacaoJogador -= 1.0f;
+                else if (fomeJogador > 0.0f) fomeJogador -= 1.0f;
+                tempoRegeneracaoJogador = 0.0f;
+            }
+        } else {
+            tempoRegeneracaoJogador = 0.0f;
+        }
+    }
+
+    /* A movimentação vertical é física: Espaço ou seta para cima inicia
+       um salto quando o jogador está apoiado. A seta para baixo e Shift
+       deixam de mover o jogador através dos blocos. */
+    if ((teclas[' '] || especiais[GLUT_KEY_UP]) && jogadorNoChao())
+        velocidadeVertical = VELOCIDADE_SALTO;
+
+    velocidadeVertical -= GRAVIDADE * dt;
+    if (velocidadeVertical < -VELOCIDADE_QUEDA)
+        velocidadeVertical = -VELOCIDADE_QUEDA;
+
+    int estavaNoChao = jogadorNoChao();
+    float antesX = jogadorX, antesY = jogadorY, antesZ = jogadorZ;
+    moveJogador(mx * passo, velocidadeVertical * dt, mz * passo);
+    atualizaChunks(jogadorX, jogadorZ, DISTANCIA_CARGA_CHUNK);
+
+    /* Se a colisão bloqueou o deslocamento vertical, zerar a velocidade
+       evita acumular queda contra o chão ou impulso contra o teto. */
+    if (jogadorY == antesY)
+        velocidadeVertical = 0.0f;
+
+    if (!estavaNoChao && jogadorY < antesY)
+        distanciaQueda += antesY - jogadorY;
+    if (!estavaNoChao && jogadorNoChao()) {
+        if (distanciaQueda > ALTURA_QUEDA_SEGURA) {
+            vidaJogador -= (distanciaQueda - ALTURA_QUEDA_SEGURA) * 2.0f;
+            audioDano();
+        }
+        distanciaQueda = 0.0f;
+    }
+    if (vidaJogador <= 0.0f)
+        reapareceJogador();
 
     /* animação: quanto o personagem realmente andou no chão (a colisão
        pode ter recusado parte do movimento) */
     float andou = sqrtf((jogadorX - antesX) * (jogadorX - antesX) +
                         (jogadorZ - antesZ) * (jogadorZ - antesZ));
+    audioAtualizaPassos(dt, andou > 0.0001f && estavaNoChao);
+    {
+        int px = (int)floorf(jogadorX);
+        int py = (int)floorf(jogadorY + 0.15f);
+        int pz = (int)floorf(jogadorZ);
+        int dentroDaAgua = blocoNoMundo(px, py, pz) == AGUA ||
+                           blocoNoMundo(px, py + 1, pz) == AGUA ||
+                           blocoNoMundo(px, py + 2, pz) == AGUA;
+        audioAtualizaAgua(dentroDaAgua);
+    }
     faseCaminhada += andou * FASE_POR_BLOCO;
     if (andou > 0.0f) amplitudeCaminhada += VELOCIDADE_AMPLITUDE * dt;
     else              amplitudeCaminhada -= VELOCIDADE_AMPLITUDE * dt;
     if (amplitudeCaminhada > 1.0f) amplitudeCaminhada = 1.0f;
     if (amplitudeCaminhada < 0.0f) amplitudeCaminhada = 0.0f;
+
+    atualizaDrops(dt);
+    atualizaEntidades(dt);
+    atualizaEfeitos(dt);
+    if (vidaJogador <= 0.0f)
+        reapareceJogador();
 
     glutPostRedisplay();
 }
@@ -2002,6 +2991,7 @@ void fechaMenu(void)
     if (estadoAnterior != ESTADO_PAUSADO)
         ultimoTempo = glutGet(GLUT_ELAPSED_TIME);
 #else
+    (void)estadoAnterior;
     ultimoTempo = glutGet(GLUT_ELAPSED_TIME);
 #endif
 }
@@ -2270,12 +3260,144 @@ static void desenhaMira(void)
     glEnd();
 }
 
+static void desenhaIconeMaca(float x, float y, float lado)
+{
+    float s = lado / 58.0f;
+
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_DEPTH_TEST);
+
+    /* Silhueta escura em degraus, para manter o aspecto pixel art. */
+    glColor3f(0.18f, 0.035f, 0.025f);
+    retangulo(x + 18.0f*s, y + 10.0f*s, x + 40.0f*s, y + 47.0f*s);
+    retangulo(x + 13.0f*s, y + 17.0f*s, x + 45.0f*s, y + 39.0f*s);
+    retangulo(x + 22.0f*s, y + 8.0f*s,  x + 36.0f*s, y + 49.0f*s);
+
+    /* Corpo vermelho com duas saliências no topo. */
+    glColor3f(0.72f, 0.025f, 0.035f);
+    retangulo(x + 19.0f*s, y + 14.0f*s, x + 39.0f*s, y + 44.0f*s);
+    retangulo(x + 15.0f*s, y + 21.0f*s, x + 43.0f*s, y + 37.0f*s);
+    retangulo(x + 22.0f*s, y + 12.0f*s, x + 36.0f*s, y + 45.0f*s);
+
+    glColor3f(0.95f, 0.045f, 0.07f);
+    retangulo(x + 19.0f*s, y + 22.0f*s, x + 37.0f*s, y + 39.0f*s);
+    retangulo(x + 23.0f*s, y + 16.0f*s, x + 34.0f*s, y + 42.0f*s);
+
+    /* Brilho e sombra lateral. */
+    glColor3f(1.0f, 0.28f, 0.30f);
+    retangulo(x + 19.0f*s, y + 29.0f*s, x + 24.0f*s, y + 37.0f*s);
+    retangulo(x + 24.0f*s, y + 36.0f*s, x + 30.0f*s, y + 40.0f*s);
+    glColor3f(0.48f, 0.015f, 0.025f);
+    retangulo(x + 37.0f*s, y + 18.0f*s, x + 43.0f*s, y + 34.0f*s);
+    retangulo(x + 22.0f*s, y + 10.0f*s, x + 35.0f*s, y + 14.0f*s);
+
+    /* Cabinho e folha. */
+    glColor3f(0.28f, 0.10f, 0.035f);
+    retangulo(x + 30.0f*s, y + 43.0f*s, x + 35.0f*s, y + 52.0f*s);
+    glColor3f(0.16f, 0.38f, 0.08f);
+    retangulo(x + 34.0f*s, y + 48.0f*s, x + 43.0f*s, y + 52.0f*s);
+    retangulo(x + 39.0f*s, y + 50.0f*s, x + 45.0f*s, y + 54.0f*s);
+}
+
+static void desenhaIconeFerramenta(int tipo, float x, float y, float lado)
+{
+    float s = lado / 58.0f;
+
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_DEPTH_TEST);
+
+    if (tipo == ESPADA) {
+        float altura = lado * 306.0f / 335.0f;
+        desenhaImagemUI(&texturaEspada, x + lado * 0.05f,
+                        y + lado * 0.07f, lado * 0.90f, altura * 0.90f);
+        return;
+    }
+
+    if (tipo == PICARETA) {
+        float altura = lado * 335.0f / 335.0f;
+        desenhaImagemUI(&texturaPicareta, x, y, lado, altura);
+        return;
+    }
+
+    if (tipo == PICARETA) {
+        /* Silhueta pixelada fiel à referência: cabo diagonal, barra
+           metálica superior e gancho descendo no lado direito. */
+        glColor3f(0.06f, 0.05f, 0.045f);
+        glBegin(GL_POLYGON);
+        glVertex2f(x+8*s,y+7*s);  glVertex2f(x+16*s,y+7*s);
+        glVertex2f(x+41*s,y+36*s); glVertex2f(x+41*s,y+43*s);
+        glVertex2f(x+34*s,y+43*s); glVertex2f(x+8*s,y+15*s);
+        glEnd();
+        glColor3f(0.43f, 0.26f, 0.10f);
+        glBegin(GL_POLYGON);
+        glVertex2f(x+11*s,y+9*s);  glVertex2f(x+14*s,y+9*s);
+        glVertex2f(x+38*s,y+37*s); glVertex2f(x+35*s,y+40*s);
+        glVertex2f(x+11*s,y+13*s); glEnd();
+
+        glColor3f(0.06f, 0.06f, 0.065f);
+        glBegin(GL_POLYGON);
+        glVertex2f(x+22*s,y+36*s); glVertex2f(x+28*s,y+36*s);
+        glVertex2f(x+28*s,y+40*s); glVertex2f(x+44*s,y+40*s);
+        glVertex2f(x+44*s,y+31*s); glVertex2f(x+50*s,y+31*s);
+        glVertex2f(x+50*s,y+45*s); glVertex2f(x+45*s,y+45*s);
+        glVertex2f(x+45*s,y+49*s); glVertex2f(x+25*s,y+49*s);
+        glVertex2f(x+25*s,y+44*s); glVertex2f(x+22*s,y+44*s);
+        glEnd();
+        glColor3f(0.72f, 0.73f, 0.74f);
+        glBegin(GL_POLYGON);
+        glVertex2f(x+25*s,y+39*s); glVertex2f(x+29*s,y+39*s);
+        glVertex2f(x+29*s,y+43*s); glVertex2f(x+42*s,y+43*s);
+        glVertex2f(x+42*s,y+34*s); glVertex2f(x+46*s,y+34*s);
+        glVertex2f(x+46*s,y+42*s); glVertex2f(x+42*s,y+42*s);
+        glVertex2f(x+42*s,y+46*s); glVertex2f(x+28*s,y+46*s);
+        glVertex2f(x+28*s,y+42*s); glVertex2f(x+25*s,y+42*s);
+        glEnd();
+        glColor3f(0.96f, 0.97f, 0.97f);
+        retangulo(x+28*s,y+40*s,x+35*s,y+44*s);
+    } else {
+        /* Espada: lâmina longa clara, guarda escura e cabo separado. */
+        glColor3f(0.07f, 0.07f, 0.08f);
+        glBegin(GL_POLYGON);
+        glVertex2f(x+24*s,y+24*s); glVertex2f(x+30*s,y+24*s);
+        glVertex2f(x+50*s,y+47*s); glVertex2f(x+45*s,y+52*s);
+        glVertex2f(x+20*s,y+29*s); glEnd();
+        glColor3f(0.75f, 0.76f, 0.78f);
+        glBegin(GL_POLYGON);
+        glVertex2f(x+28*s,y+27*s); glVertex2f(x+31*s,y+27*s);
+        glVertex2f(x+46*s,y+46*s); glVertex2f(x+43*s,y+49*s);
+        glVertex2f(x+24*s,y+29*s); glEnd();
+        glColor3f(0.96f, 0.97f, 0.98f);
+        retangulo(x+30*s,y+30*s,x+34*s,y+35*s);
+        retangulo(x+35*s,y+35*s,x+39*s,y+40*s);
+        retangulo(x+40*s,y+40*s,x+44*s,y+45*s);
+
+        glColor3f(0.09f, 0.09f, 0.10f);
+        retangulo(x+16*s,y+20*s,x+31*s,y+26*s);
+        retangulo(x+21*s,y+17*s,x+27*s,y+29*s);
+        glColor3f(0.38f, 0.22f, 0.07f);
+        retangulo(x+10*s,y+8*s,x+17*s,y+15*s);
+        retangulo(x+15*s,y+13*s,x+22*s,y+20*s);
+        glColor3f(0.17f, 0.12f, 0.07f);
+        retangulo(x+8*s,y+6*s,x+14*s,y+12*s);
+    }
+}
+
 /* Desenha um bloco real, reduzido e girado, dentro de um slot 2D. O
    centro e a posicao continuam em pixels; apenas a aparencia do item
    usa a geometria 3D ja existente. */
 static void desenhaIconeBloco3D(int tipo, float x, float y, float lado)
 {
     float tamanho = lado * 0.429f; /* aumento de 10% sobre a escala atual */
+
+    if (tipo == MACA) {
+        desenhaIconeMaca(x, y, lado);
+        return;
+    }
+
+    if (tipo == PICARETA || tipo == ESPADA) {
+        desenhaIconeFerramenta(tipo, x, y, lado);
+        return;
+    }
 
     glPushMatrix();
     glTranslatef(x + lado / 2.0f, y + lado / 2.0f, 0.0f);
@@ -2292,12 +3414,103 @@ static void desenhaIconeBloco3D(int tipo, float x, float y, float lado)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-    desenhaBloco(tipo, 1.0f, TODAS_FACES);
+    if (tipo == TOCHA)
+        desenhaTocha(1.0f);
+    else
+        desenhaBloco(tipo, 1.0f, TODAS_FACES);
     glDisable(GL_BLEND);
     glDepthMask(GL_TRUE);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glPopMatrix();
+}
+
+static const char *nomeDoItem(int tipo)
+{
+    switch (tipo) {
+        case GRAMA:         return "GRAMA";
+        case TERRA:         return "TERRA";
+        case PEDRA:         return "PEDRA";
+        case TRONCO:        return "TRONCO";
+        case FOLHA:         return "FOLHAS";
+        case AREIA:         return "AREIA";
+        case TOCHA:         return "TOCHA";
+        case NEVE:          return "NEVE";
+        case VIDRO:         return "VIDRO";
+        case MACA:          return "MACA";
+        case PICARETA:      return "PICARETA";
+        case ESPADA:        return "ESPADA";
+        case CRISTAL:       return "CRISTAL";
+        case MINERIO_CARVAO:return "MINERIO DE CARVAO";
+        case MINERIO_FERRO: return "MINERIO DE FERRO";
+        default:            return "ITEM";
+    }
+}
+
+static void desenhaCoracoesVida(void)
+{
+    const float larguraCoracao = 24.0f;
+    const float alturaCoracao = 26.0f;
+    const float espacamento = 1.0f;
+    const float larguraBarra = NUM_ITENS * 58.0f +
+                               (NUM_ITENS - 1) * 6.0f + 24.0f;
+#if DEMO_UI_FIXED_BAR
+    const float barraX0 = DEMO_UI_FIXED_BAR_X;
+#else
+    const float barraX0 = (larguraJanela - larguraBarra) / 2.0f;
+#endif
+    /* Alinha a fileira ao início dos slots, em vez de centralizá-la. */
+    const float x0 = barraX0 + 14.0f;
+    /* Mesmo tamanho e mesma altura dos ícones de fome. */
+    const float y0 = 18.0f + 58.0f + 16.0f;
+    float vida = vidaJogador;
+    int i;
+
+    if (vida < 0.0f) vida = 0.0f;
+    if (vida > VIDA_MAXIMA) vida = VIDA_MAXIMA;
+
+    for (i = 0; i < 10; i++) {
+        float restante = vida - i * 2.0f;
+        int estado = restante >= 2.0f ? 2 : (restante >= 1.0f ? 1 : 0);
+        const TexturaUI *icone = estado == 2 ? &texturaCoracaoCheio :
+                                 (estado == 1 ? &texturaCoracaoMeio :
+                                                 &texturaCoracaoVazio);
+        desenhaImagemUI(icone,
+                        x0 + i * (larguraCoracao + espacamento), y0,
+                        larguraCoracao, alturaCoracao);
+    }
+}
+
+static void desenhaIconesFome(void)
+{
+    const float larguraIcone = 24.0f;
+    const float alturaIcone = 26.0f;
+    const float espacamento = 1.0f;
+    const float larguraBarra = NUM_ITENS * 58.0f +
+                               (NUM_ITENS - 1) * 6.0f + 24.0f;
+    const float larguraTotal = 10.0f * larguraIcone + 9.0f * espacamento;
+#if DEMO_UI_FIXED_BAR
+    const float barraX0 = DEMO_UI_FIXED_BAR_X;
+#else
+    const float barraX0 = (larguraJanela - larguraBarra) / 2.0f;
+#endif
+    const float x0 = barraX0 + larguraBarra - 14.0f - larguraTotal;
+    const float y0 = 18.0f + 58.0f + 16.0f;
+    float fome = fomeJogador;
+    int i;
+
+    if (fome < 0.0f) fome = 0.0f;
+    if (fome > FOME_MAXIMA) fome = FOME_MAXIMA;
+
+    for (i = 0; i < 10; i++) {
+        float restante = fome - i * 2.0f;
+        int estado = restante >= 2.0f ? 2 : (restante >= 1.0f ? 1 : 0);
+        const TexturaUI *icone = estado == 2 ? &texturaFomeCheia :
+                                 (estado == 1 ? &texturaFomeMeia :
+                                                 &texturaFomeVazia);
+        desenhaImagemUI(icone, x0 + i * (larguraIcone + espacamento), y0,
+                        larguraIcone, alturaIcone);
+    }
 }
 
 static void desenhaBarraItens(void)
@@ -2340,8 +3553,298 @@ static void desenhaBarraItens(void)
           glColor3f(0.0f, 0.0f, 0.0f);
           escreve(FONTE, textoX + 1.0f, textoY - 1.0f, quantidade);
           glColor3f(1.0f, 1.0f, 1.0f);
-          escreve(FONTE, textoX, textoY, quantidade); }
+          escreve(FONTE, textoX, textoY, quantidade);
+          if (i == itemSelecionado &&
+              (tiposItens[i] == PICARETA || tiposItens[i] == ESPADA)) {
+              float durabilidade = durabilidadeDoItem(tiposItens[i]) / 100.0f;
+              float larguraBarra = lado - 8.0f;
+              /* A durabilidade fica dentro do slot, abaixo do icone. */
+              glColor3f(0.02f, 0.02f, 0.02f);
+              retangulo(x + 4.0f, y0 + 13.0f,
+                        x + 4.0f + larguraBarra, y0 + 17.0f);
+              if (durabilidade < 0.0f) durabilidade = 0.0f;
+              if (durabilidade > 1.0f) durabilidade = 1.0f;
+              glColor3f(durabilidade > 0.25f ? 0.25f : 0.90f,
+                        durabilidade > 0.25f ? 0.85f : 0.20f,
+                        0.18f);
+              retangulo(x + 4.0f, y0 + 13.0f,
+                        x + 4.0f + larguraBarra * durabilidade,
+                        y0 + 17.0f);
+          }
+        }
     }
+
+    /* Identifica o item atualmente selecionado pela roda do mouse. */
+    {
+        const char *nome = nomeDoItem(tiposItens[itemSelecionado]);
+        float textoW = larguraTexto(FONTE, nome);
+        float textoX = x0 + largura / 2.0f;
+        float textoY = y0 + lado + 39.0f;
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0.02f, 0.02f, 0.03f, 0.86f);
+        retangulo(textoX - textoW / 2.0f - 10.0f, textoY - 6.0f,
+                  textoX + textoW / 2.0f + 10.0f, textoY + 19.0f);
+        glDisable(GL_BLEND);
+
+        glColor3f(0.0f, 0.0f, 0.0f);
+        escreve(FONTE, textoX - textoW / 2.0f + 1.0f, textoY - 1.0f, nome);
+        glColor3f(1.0f, 0.86f, 0.30f);
+        escreve(FONTE, textoX - textoW / 2.0f, textoY, nome);
+    }
+}
+
+static int slotInventarioEm(int x, int y)
+{
+    const float lado = 58.0f, espaco = 6.0f;
+    const float painelW = 9.0f * lado + 8.0f * espaco + 24.0f;
+    /* Reserva uma faixa maior no topo para o título ficar separado da grade. */
+    const float painelH = 4.0f * lado + 3.0f * espaco + 100.0f;
+    const float x0 = (larguraJanela - painelW) / 2.0f;
+    const float y0 = (alturaJanela - painelH) / 2.0f;
+    int coluna, linha;
+
+    y = alturaJanela - y;
+    x -= (int)(x0 + 12.0f);
+    y -= (int)(y0 + 42.0f);
+    if (x < 0 || y < 0) return -1;
+
+    coluna = (int)(x / (lado + espaco));
+    linha = (int)(y / (lado + espaco));
+    if (coluna < 0 || coluna >= 9 || linha < 0 || linha >= 4)
+        return -1;
+    if (x % (int)(lado + espaco) >= (int)lado ||
+        y % (int)(lado + espaco) >= (int)lado)
+        return -1;
+    return linha * 9 + coluna;
+}
+
+static void desenhaInventario(void)
+{
+    const float lado = 58.0f, espaco = 6.0f;
+    const float painelW = 9.0f * lado + 8.0f * espaco + 24.0f;
+    /* Reserva uma faixa maior no topo para o título ficar separado da grade. */
+    const float painelH = 4.0f * lado + 3.0f * espaco + 100.0f;
+    const float x0 = (larguraJanela - painelW) / 2.0f;
+    const float y0 = (alturaJanela - painelH) / 2.0f;
+    int i;
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(0.03f, 0.04f, 0.06f, 0.96f);
+    retangulo(x0, y0, x0 + painelW, y0 + painelH);
+    glDisable(GL_BLEND);
+
+    glColor3f(0.80f, 0.82f, 0.88f);
+    desenhaTextoCentralizado(FONTE, larguraJanela / 2.0f,
+                             y0 + 13.0f, "clique: mover pilha | direita: mover 1 | E ou ESC fecha");
+
+    /* A profundidade da cena não deve esconder os mini-blocos do painel. */
+    glClear(GL_DEPTH_BUFFER_BIT);
+    for (i = 0; i < INVENTORY_SLOTS; i++) {
+        int coluna = i % 9;
+        int linha = i / 9;
+        float x = x0 + 12.0f + coluna * (lado + espaco);
+        float y = y0 + 42.0f + linha * (lado + espaco);
+        ItemStack *slot = &inventario.slots[i];
+
+        glColor3f(i == slotSelecionadoInventario ? 0.20f :
+                  (i == itemSelecionado ? 1.0f : 0.28f),
+                  i == slotSelecionadoInventario ? 0.95f :
+                  (i == itemSelecionado ? 0.78f : 0.30f),
+                  i == slotSelecionadoInventario ? 1.0f :
+                  (i == itemSelecionado ? 0.18f : 0.34f));
+        retangulo(x - 2.0f, y - 2.0f, x + lado + 2.0f, y + lado + 2.0f);
+        glColor3f(0.08f, 0.09f, 0.12f);
+        retangulo(x, y, x + lado, y + lado);
+
+        if (slot->quantidade > 0) {
+            desenhaIconeBloco3D(slot->tipo, x, y, lado);
+            {
+                char quantidade[16];
+                sprintf(quantidade, "%d", slot->quantidade);
+                glDisable(GL_TEXTURE_2D);
+                glColor3f(0.0f, 0.0f, 0.0f);
+                escreve(FONTE, x + lado - larguraTexto(FONTE, quantidade) - 2.0f,
+                        y + 5.0f, quantidade);
+                glColor3f(1.0f, 1.0f, 1.0f);
+                escreve(FONTE, x + lado - larguraTexto(FONTE, quantidade) - 3.0f,
+                        y + 6.0f, quantidade);
+            }
+        }
+    }
+
+    /* O título fica acima dos slots para não ser coberto pela camada da grade. */
+    glColor3f(1.0f, 0.86f, 0.30f);
+    desenhaTextoCentralizado(FONTE_TITULO, larguraJanela / 2.0f,
+                             y0 + painelH - 36.0f, "INVENTARIO");
+}
+
+static void desenhaCrafting(void)
+{
+    const int lado = 58, espaco = 6;
+    int i;
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(0.03f, 0.04f, 0.06f, 0.97f);
+    retangulo(80.0f, 42.0f, larguraJanela - 80.0f, alturaJanela - 36.0f);
+    glDisable(GL_BLEND);
+
+    glColor3f(1.0f, 0.86f, 0.30f);
+    desenhaTextoCentralizado(FONTE_TITULO, larguraJanela / 2.0f,
+                             alturaJanela - 70.0f, "CRAFTING");
+    glColor3f(0.80f, 0.82f, 0.88f);
+    desenhaTextoCentralizado(FONTE, larguraJanela / 2.0f, 55.0f,
+                             "clique em um item para usar | C ou ESC volta ao inventario");
+
+    glColor3f(0.35f, 0.38f, 0.45f);
+    retangulo(240.0f, 450.0f, 400.0f, 604.0f);
+    for (i = 0; i < 4; i++) {
+        int coluna = i % 2, linha = i / 2;
+        float x = 260.0f + coluna * (lado + espaco);
+        float y = 470.0f + linha * (lado + espaco);
+        ItemStack *slot = &gradeCrafting[i];
+
+        glColor3f(0.18f, 0.22f, 0.28f);
+        retangulo(x, y, x + lado, y + lado);
+        if (slot->quantidade > 0)
+            desenhaIconeBloco3D(slot->tipo, x, y, lado);
+    }
+
+    glColor3f(0.95f, 0.75f, 0.18f);
+    retangulo(515.0f, 465.0f, 583.0f, 533.0f);
+    glColor3f(0.18f, 0.22f, 0.28f);
+    retangulo(520.0f, 470.0f, 578.0f, 528.0f);
+    if (resultadoCrafting.quantidade > 0) {
+        desenhaIconeBloco3D(resultadoCrafting.tipo, 520.0f, 470.0f, lado);
+        glDisable(GL_TEXTURE_2D);
+        glColor3f(1.0f, 1.0f, 1.0f);
+        {
+            char quantidade[16];
+            sprintf(quantidade, "%d", resultadoCrafting.quantidade);
+            escreve(FONTE, 555.0f, 476.0f, quantidade);
+        }
+    }
+
+    glColor3f(0.75f, 0.78f, 0.84f);
+    escreve(FONTE, 252.0f, 435.0f,
+            "2 areia = 1 vidro | 1 tronco + 1 folha = 4 tochas");
+    escreve(FONTE, 252.0f, 419.0f,
+            "2 pedra + 1 tronco = 1 picareta");
+
+    /* Inventário inferior. */
+    for (i = 0; i < INVENTORY_SLOTS; i++) {
+        int coluna = i % 9, linha = i / 9;
+        float x = 220.0f + coluna * (lado + espaco);
+        float y = 72.0f + linha * (lado + espaco);
+        ItemStack *slot = &inventario.slots[i];
+
+        glColor3f(i < NUM_ITENS && i == itemSelecionado ? 1.0f : 0.30f,
+                  i < NUM_ITENS && i == itemSelecionado ? 0.78f : 0.32f,
+                  i < NUM_ITENS && i == itemSelecionado ? 0.18f : 0.38f);
+        retangulo(x - 2.0f, y - 2.0f, x + lado + 2.0f, y + lado + 2.0f);
+        glColor3f(0.08f, 0.09f, 0.12f);
+        retangulo(x, y, x + lado, y + lado);
+        if (slot->quantidade > 0) {
+            char quantidade[16];
+            desenhaIconeBloco3D(slot->tipo, x, y, lado);
+            sprintf(quantidade, "%d", slot->quantidade);
+            glDisable(GL_TEXTURE_2D);
+            glColor3f(1.0f, 1.0f, 1.0f);
+            escreve(FONTE, x + lado - larguraTexto(FONTE, quantidade) - 3.0f,
+                    y + 6.0f, quantidade);
+        }
+    }
+}
+
+static void desenhaDisco3D(float cx, float cy, float cz, float raio,
+                            float r, float g, float b)
+{
+    int i;
+    glColor3f(r, g, b);
+    glBegin(GL_TRIANGLE_FAN);
+    glVertex3f(cx, cy, cz);
+    for (i = 0; i <= 24; i++) {
+        float a = 2.0f * PI * i / 24.0f;
+        glVertex3f(cx + cosf(a) * raio,
+                   cy + sinf(a) * raio,
+                   cz);
+    }
+    glEnd();
+}
+
+static void desenhaAstros(void)
+{
+    static const float estrelas[][2] = {
+        {0.08f, 0.78f}, {0.16f, 0.62f}, {0.23f, 0.86f}, {0.31f, 0.72f},
+        {0.39f, 0.91f}, {0.47f, 0.68f}, {0.55f, 0.84f}, {0.63f, 0.75f},
+        {0.71f, 0.90f}, {0.80f, 0.66f}, {0.90f, 0.82f}, {0.12f, 0.94f},
+        {0.27f, 0.58f}, {0.44f, 0.79f}, {0.58f, 0.61f}, {0.75f, 0.55f},
+        {0.86f, 0.95f}, {0.05f, 0.56f}, {0.35f, 0.63f}, {0.68f, 0.97f}
+    };
+    float angulo = tempoMundo * 2.0f * PI;
+    float sunPixelX = larguraJanela * (0.5f + 0.48f * cosf(angulo));
+    float sunPixelY = alturaJanela * (0.55f + 0.40f * sinf(angulo));
+    float moonPixelX = larguraJanela * (0.5f - 0.48f * cosf(angulo));
+    float moonPixelY = alturaJanela * (0.55f - 0.40f * sinf(angulo));
+    const float distanciaCeu = 80.0f;
+    float escalaX, escalaY, escalaRaio;
+    float sunX, sunY, moonX, moonY;
+
+    /* Os astros são sprites no espaço da câmera, mas continuam sujeitos
+       ao depth test. Desse modo o céu pode acompanhar a tela e, ainda
+       assim, uma montanha ou bloco à frente consegue ocultá-los. */
+    if (projecaoOrtogonal) {
+        double aspecto = (double)larguraJanela / alturaJanela;
+        escalaX = 20.0f * (float)aspecto;
+        escalaY = 20.0f;
+        escalaRaio = 20.0f / alturaJanela;
+    } else {
+        float metadeAltura = tanf(campoDeVisao * PI / 360.0f) *
+                             distanciaCeu;
+        escalaY = 2.0f * metadeAltura;
+        escalaX = escalaY * (float)larguraJanela / alturaJanela;
+        escalaRaio = escalaY / alturaJanela;
+    }
+    sunX = ((sunPixelX / larguraJanela) - 0.5f) * escalaX;
+    sunY = ((sunPixelY / alturaJanela) - 0.5f) * escalaY;
+    moonX = ((moonPixelX / larguraJanela) - 0.5f) * escalaX;
+    moonY = ((moonPixelY / alturaJanela) - 0.5f) * escalaY;
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_TEXTURE_2D);
+
+    if (sinf(angulo) < 0.0f) {
+        int i;
+        glPointSize(2.0f);
+        glColor3f(0.88f, 0.93f, 1.0f);
+        glBegin(GL_POINTS);
+        for (i = 0; i < (int)(sizeof(estrelas) / sizeof(estrelas[0])); i++)
+            glVertex3f(((estrelas[i][0]) - 0.5f) * escalaX,
+                       ((estrelas[i][1]) - 0.5f) * escalaY,
+                       -distanciaCeu + 1.0f);
+        glEnd();
+        glPointSize(1.0f);
+    }
+    /* O sol existe apenas durante o dia; a lua e as estrelas apenas à
+       noite. Antes ambos eram desenhados ao mesmo tempo. */
+    if (sinf(angulo) >= 0.0f &&
+        sunPixelY > -50.0f && sunPixelY < alturaJanela + 50.0f)
+        desenhaDisco3D(sunX, sunY, -distanciaCeu, 24.0f * escalaRaio,
+                       1.0f, 0.82f, 0.24f);
+    if (sinf(angulo) < 0.0f &&
+        moonPixelY > -40.0f && moonPixelY < alturaJanela + 40.0f)
+        desenhaDisco3D(moonX, moonY, -distanciaCeu, 18.0f * escalaRaio,
+                       0.80f, 0.86f, 0.95f);
+
+    glDepthMask(GL_TRUE);
+    glPopMatrix();
 }
 
 static void desenhaInstrucoes(void)
@@ -2350,10 +3853,16 @@ static void desenhaInstrucoes(void)
         { "W / S",              "andar para frente / tras" },
         { "A / D",              "andar para os lados" },
         { "R (segurando)",      "correr" },
-        { "Espaco / seta cima", "subir" },
-        { "Shift / seta baixo", "descer" },
+        { "Espaco / seta cima", "saltar" },
         { "Setas esquerda/direita", "girar o olhar" },
         { "Mouse",              "olhar ao redor" },
+        { "Clique esquerdo",    "quebrar bloco" },
+        { "Clique direito",     "colocar bloco" },
+        { "Espada + clique/G",  "atacar inimigos" },
+        { "E",                  "abrir inventario" },
+        { "C (inventario)",     "abrir crafting" },
+        { "Queda",              "causa dano acima de 3 blocos" },
+        { "Hora",               "ciclo de dia e noite" },
         { "Tab",                "liberar ou capturar o cursor" },
         { "V ou F5",            "alternar primeira/terceira pessoa" },
         { "P",                  "alternar perspectiva/ortografica" },
@@ -2364,10 +3873,22 @@ static void desenhaInstrucoes(void)
         { "Q (menu)",           "sair do jogo" }
     };
     int i;
-    float painelY = 78.0f;
+    int totalLinhas = (int)(sizeof(linhas) / sizeof(linhas[0]));
+    float espacamento = alturaJanela < 720 ? 24.0f : 27.0f;
+    float painelH = 100.0f + (totalLinhas - 1) * espacamento;
+    float painelY;
     float painelW = larguraJanela < 868 ? larguraJanela - 48.0f : 820.0f;
     float painelX = (larguraJanela - painelW) / 2.0f;
-    float painelH = alturaJanela - 120.0f;
+
+    /* Reduz o espaçamento em janelas baixas para que a lista inteira,
+       incluindo ESC e Q, permaneça dentro do fundo escurecido. */
+    if (painelH > alturaJanela - 24.0f) {
+        espacamento = (alturaJanela - 124.0f) / (totalLinhas - 1);
+        if (espacamento < 18.0f) espacamento = 18.0f;
+        painelH = 100.0f + (totalLinhas - 1) * espacamento;
+    }
+    painelY = (alturaJanela - painelH) / 2.0f;
+    if (painelY < 12.0f) painelY = 12.0f;
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -2379,8 +3900,8 @@ static void desenhaInstrucoes(void)
     desenhaTextoCentralizado(FONTE_TITULO, larguraJanela / 2.0f,
                              painelY + painelH - 42.0f, "INSTRUÇÕES");
 
-    for (i = 0; i < (int)(sizeof(linhas) / sizeof(linhas[0])); i++) {
-        float y = painelY + painelH - 88.0f - i * 27.0f;
+    for (i = 0; i < totalLinhas; i++) {
+        float y = painelY + painelH - 75.0f - i * espacamento;
         glColor3f(1.0f, 0.86f, 0.30f);
         escreve(FONTE, painelX + 28.0f, y, linhas[i][0]);
         glColor3f(0.92f, 0.92f, 0.92f);
@@ -2391,12 +3912,31 @@ static void desenhaInstrucoes(void)
 
 static void desenhaInformacoes(void)
 {
-    char texto[128];
-    sprintf(texto, "FPS: %d   Posicao: (%.2f, %.2f, %.2f)",
-            fpsExibido, jogadorX, jogadorY, jogadorZ);
+    char texto[192];
+    const char *nomeBioma;
+    int biomaAtual = biomaProcedural((int)floorf(jogadorX),
+                                     (int)floorf(jogadorZ));
+    float hora = tempoMundo * 24.0f;
+
+    switch (biomaAtual) {
+        case 1: nomeBioma = "Deserto"; break;
+        case 2: nomeBioma = "Tundra"; break;
+        case 3: nomeBioma = "Floresta"; break;
+        default: nomeBioma = "Planicie"; break;
+    }
+
     glDisable(GL_TEXTURE_2D);
+
+    sprintf(texto, "FPS: %d   Seed: %u   Bioma: %s   Hora: %05.2f   Posicao: (%.2f, %.2f, %.2f)",
+            fpsExibido, sementeMundo, nomeBioma, hora,
+            jogadorX, jogadorY, jogadorZ);
     glColor3f(1.0f, 1.0f, 1.0f);
     escreve(FONTE, 14.0f, alturaJanela - 28.0f, texto);
+
+    sprintf(texto, "Saturacao: %.0f / %.0f", saturacaoJogador,
+            SATURACAO_MAXIMA);
+    glColor3f(0.55f, 0.85f, 1.0f);
+    escreve(FONTE, 14.0f, alturaJanela - 52.0f, texto);
 }
 
 void movimentoInterface(int x, int y)
@@ -2419,7 +3959,29 @@ void desenhaInterface(void)
     if (estadoJogo == ESTADO_JOGANDO) {
         desenhaMira();
         desenhaBarraItens();
+        desenhaCoracoesVida();
+        desenhaIconesFome();
         desenhaInformacoes();
+        return;
+    }
+
+    if (estadoJogo == ESTADO_INVENTARIO) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0.0f, 0.0f, 0.0f, 0.62f);
+        retangulo(0, 0, larguraJanela, alturaJanela);
+        glDisable(GL_BLEND);
+        desenhaInventario();
+        return;
+    }
+
+    if (estadoJogo == ESTADO_CRAFTING) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0.0f, 0.0f, 0.0f, 0.62f);
+        retangulo(0, 0, larguraJanela, alturaJanela);
+        glDisable(GL_BLEND);
+        desenhaCrafting();
         return;
     }
 
@@ -2476,8 +4038,23 @@ void desenhaInterface(void)
 int inicioContagem = 0;   /* início da contagem de FPS (semana 1), em ms */
 int quadros = 0;          /* quadros desenhados desde inicioContagem */
 
+static void atualizaCorCeu(void)
+{
+    float dia = sinf(tempoMundo * 2.0f * PI);
+    float t;
+    float noite[3] = { 0.025f, 0.045f, 0.12f };
+    float claro[3] = { 0.53f, 0.81f, 0.92f };
+
+    if (dia < 0.0f) dia = 0.0f;
+    t = dia * dia * (3.0f - 2.0f * dia);
+    glClearColor(noite[0] + (claro[0] - noite[0]) * t,
+                 noite[1] + (claro[1] - noite[1]) * t,
+                 noite[2] + (claro[2] - noite[2]) * t, 1.0f);
+}
+
 void desenha(void)
 {
+    atualizaCorCeu();
     /* apaga a cor (fica o azul do glClearColor) e o buffer de
        profundidade, que guarda a distância de cada pixel */
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -2485,12 +4062,20 @@ void desenha(void)
     glLoadIdentity();
     posicionaCamera();
 
+    /* O céu vem antes dos blocos e usa profundidade: o sol não pode
+       atravessar montanhas ou construções. */
+    desenhaAstros();
+
     /* opacos antes dos semitransparentes: a mistura precisa do que está
        atrás já no buffer, e isso inclui o personagem */
     desenhaOpacos();
+    desenhaDrops();
+    desenhaEntidades();
+    desenhaEfeitos();
     if (modoCamera == TERCEIRA_PESSOA)
         desenhaJogador();
     desenhaTransparentes();
+    desenhaSelecaoBloco();
     iniciaInterface();
     desenhaInterface();
     terminaInterface();
@@ -2518,6 +4103,25 @@ void desenha(void)
 
 int main(int argc, char **argv)
 {
+    unsigned int seedLinha = sementeMundo;
+    int encontrouSeed = 0;
+    int argumento, argumentoDestino = 1;
+
+    for (argumento = 1; argumento < argc; argumento++) {
+        if (strcmp(argv[argumento], "--seed") == 0 && argumento + 1 < argc) {
+            seedLinha = (unsigned int)strtoul(argv[++argumento], 0, 10);
+            encontrouSeed = 1;
+        } else if (strncmp(argv[argumento], "--seed=", 7) == 0) {
+            seedLinha = (unsigned int)strtoul(argv[argumento] + 7, 0, 10);
+            encontrouSeed = 1;
+        } else {
+            argv[argumentoDestino++] = argv[argumento];
+        }
+    }
+    argc = argumentoDestino;
+    argv[argc] = 0;
+    if (encontrouSeed) defineSementeMundo(seedLinha);
+
     /* janela com buffer duplo (GLUT_DOUBLE), cores RGB e buffer de
        profundidade (GLUT_DEPTH) */
     glutInit(&argc, argv);
@@ -2560,6 +4164,7 @@ int main(int argc, char **argv)
     printf("OpenGL %s | %s\n", glGetString(GL_VERSION), glGetString(GL_RENDERER));
 
     carregaAtlas();                         /* lê o atlas e liga a textura */
+    inicializaShaderAgua();                 /* ondulação e brilho da água */
     carregaTexturasUI();                    /* lê os elementos gráficos do menu */
 
     /* as teclas são lidas por estado: a repetição automática do sistema
@@ -2588,8 +4193,13 @@ int main(int argc, char **argv)
     glEnable(GL_CULL_FACE);                 /* não desenha faces de costas */
     glClearColor(0.53f, 0.81f, 0.92f, 1.0f);   /* cor de fundo: azul do céu */
 
+    inicializaChunks();                     /* prepara as regiões do mundo */
     construirMundo();                       /* preenche a matriz, uma vez só */
-    contaItensDoMundo();                    /* quantidades exibidas na barra */
+    printf("Seed do mundo: %u\n", sementeMundo);
+    iniciaInventario();                     /* estoque inicial da barra */
+    inicializaAudio();                      /* abre os WAVs antes dos eventos */
+    iniciaEntidades();                      /* entidades hostis iniciais */
+    iniciaEfeitos();                        /* chuva e partículas */
     liberaCursor();                         /* menu inicial: cursor visivel */
 
     ultimoTempo = glutGet(GLUT_ELAPSED_TIME);
