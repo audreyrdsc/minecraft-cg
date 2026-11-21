@@ -104,8 +104,6 @@ static int sequenciaSpawn = 0;
 static float tempoAtaqueJogador = 0.0f;
 static unsigned int inimigosProximosDoCachorro = 0;
 
-#define NUM_ANIMAIS 3
-enum { ANIMAL_PORCO, ANIMAL_CACHORRO, ANIMAL_CAVALO };
 typedef struct {
     int ativo, tipo;
     float x, y, z, angulo, fase, espera, velocidadeY;
@@ -115,6 +113,15 @@ static Animal animais[NUM_ANIMAIS];
 static int cavaloMontado = 0;
 static int jogadorProximoCavalo = 0;
 static int jogadorProximoPorco = 0;
+
+int posicaoAnimalMapa(int tipo, float *x, float *z)
+{
+    if (tipo < 0 || tipo >= NUM_ANIMAIS || !x || !z || !animais[tipo].ativo)
+        return 0;
+    *x = animais[tipo].x;
+    *z = animais[tipo].z;
+    return 1;
+}
 
 static GLuint shaderFogo = 0;
 static GLint shaderFogoTempo = -1;
@@ -391,13 +398,29 @@ void iniciaAnimais(void)
         Animal *a = &animais[i];
         a->tipo = i;
         a->aleatorio = sementeMundo ^ (unsigned int)(0x9e3779b9u * (i + 1));
-        /* No mundo inicial este ponto e plano; em saves modificados nunca
-           enterramos o cavalo em blocos construidos pelo jogador. */
-        if (i == ANIMAL_CAVALO && chaoSeguroAnimal(12, 2) == 3 &&
-            animalLivre(12.0f, 3.0f, 2.5f, 2.3f)) {
-            a->x = 12.0f; a->y = 3.0f; a->z = 2.5f;
-            a->ativo = 1;
-            continue;
+        if (i == ANIMAL_CAVALO) {
+            /* Prefere o ponto solicitado; nunca enterra o cavalo em blocos
+               de um mundo salvo ou de uma seed com relevo diferente. */
+            if (chaoSeguroAnimal(91, 6) == 4 &&
+                animalLivre(91.76f, 4.01f, 6.70f, 2.3f)) {
+                a->x = 91.76f; a->y = 4.01f; a->z = 6.70f;
+                a->ativo = 1;
+                continue;
+            }
+            for (raio = 0; raio < 20 && !a->ativo; raio++)
+                for (dx = -raio; dx <= raio && !a->ativo; dx++)
+                    for (dz = -raio; dz <= raio && !a->ativo; dz++) {
+                        int x = 91 + dx, z = 6 + dz;
+                        int chao;
+                        if (abs(dx) != raio && abs(dz) != raio) continue;
+                        chao = chaoSeguroAnimal(x, z);
+                        if (chao >= 0 && animalLivre(x + 0.5f, (float)chao,
+                                                    z + 0.5f, 2.3f)) {
+                            a->x = x + 0.5f; a->y = (float)chao; a->z = z + 0.5f;
+                            a->ativo = 1;
+                        }
+                    }
+            if (a->ativo) continue;
         }
         for (raio = 3 + i * 2; raio < 20 && !a->ativo; raio++)
             for (dx = -raio; dx <= raio && !a->ativo; dx++)
@@ -524,6 +547,17 @@ void atualizaAnimais(float dt)
 }
 
 int jogadorMontado(void) { return cavaloMontado; }
+int montariaNaAgua(void)
+{
+    const Animal *a = &animais[ANIMAL_CAVALO];
+    int x, y, z;
+    if (!cavaloMontado || !a->ativo) return 0;
+    for (x = (int)floorf(a->x - 0.64f); x <= (int)floorf(a->x + 0.64f - 0.001f); x++)
+        for (y = (int)floorf(a->y + 0.01f); y <= (int)floorf(a->y + 2.3f - 0.01f); y++)
+            for (z = (int)floorf(a->z - 0.64f); z <= (int)floorf(a->z + 0.64f - 0.001f); z++)
+                if (blocoNoMundo(x, y, z) == AGUA) return 1;
+    return 0;
+}
 void cancelaMontaria(void) { cavaloMontado = 0; audioAtualizaGalope(0); }
 
 int alternaMontaria(void)
@@ -562,23 +596,30 @@ int alternaMontaria(void)
 void moveMontaria(float dx, float dz, float dt, int saltar)
 {
     Animal *a = &animais[ANIMAL_CAVALO];
-    int apoiado;
-    float proximoY;
+    int apoiado, i, passos;
+    float proximoY, passoTempo;
     float antesX, antesZ;
     if (!cavaloMontado || !a->ativo) return;
     antesX = a->x; antesZ = a->z;
     a->angulo = -yaw;
     apoiado = !animalLivre(a->x, a->y - 0.06f, a->z, 2.3f);
-    if (saltar && apoiado) a->velocidadeY = 6.0f;
-    a->velocidadeY -= GRAVIDADE * dt;
-    proximoY = a->y + a->velocidadeY * dt;
-    if (animalLivre(a->x, proximoY, a->z, 2.3f) &&
-        posicaoLivre(a->x, proximoY + 1.15f, a->z)) a->y = proximoY;
-    else a->velocidadeY = 0.0f;
-    if (animalLivre(a->x + dx, a->y, a->z, 2.3f) &&
-        posicaoLivre(a->x + dx, a->y + 1.15f, a->z)) a->x += dx;
-    if (animalLivre(a->x, a->y, a->z + dz, 2.3f) &&
-        posicaoLivre(a->x, a->y + 1.15f, a->z + dz)) a->z += dz;
+    if (saltar && apoiado) a->velocidadeY = 8.0f;
+    /* Subpassos mantem a trajetoria e as colisoes estaveis em FPS baixo. */
+    passos = (int)ceilf(fmaxf(dt / 0.025f, fmaxf(fabsf(dx), fabsf(dz)) / 0.10f));
+    if (passos < 1) passos = 1;
+    passoTempo = dt / passos;
+    for (i = 0; i < passos; i++) {
+        float passoX = dx / passos, passoZ = dz / passos;
+        a->velocidadeY -= GRAVIDADE * passoTempo;
+        proximoY = a->y + a->velocidadeY * passoTempo;
+        if (animalLivre(a->x, proximoY, a->z, 2.3f) &&
+            posicaoLivre(a->x, proximoY + 1.15f, a->z)) a->y = proximoY;
+        else a->velocidadeY = 0.0f;
+        if (animalLivre(a->x + passoX, a->y, a->z, 2.3f) &&
+            posicaoLivre(a->x + passoX, a->y + 1.15f, a->z)) a->x += passoX;
+        if (animalLivre(a->x, a->y, a->z + passoZ, 2.3f) &&
+            posicaoLivre(a->x, a->y + 1.15f, a->z + passoZ)) a->z += passoZ;
+    }
     audioAtualizaGalope(fabsf(a->x - antesX) + fabsf(a->z - antesZ) > 0.00001f);
     if (dx * dx + dz * dz > 0.000001f) {
         a->fase += dt * 8.0f;

@@ -434,7 +434,8 @@ typedef enum {
     ESTADO_PAUSADO,
     ESTADO_INSTRUCOES,
     ESTADO_INVENTARIO,
-    ESTADO_CRAFTING
+    ESTADO_CRAFTING,
+    ESTADO_MAPA
 } EstadoJogo;
 
 extern EstadoJogo estadoJogo;
@@ -459,6 +460,10 @@ static void desenhaAstros(void);
 static void desenhaCeuShader(void);
 static void desenhaSelecaoBloco(void);
 static void iniciaAnimacaoBraco(int tipo);
+static void abreMapa(void);
+static void fechaMapa(void);
+static void retanguloIconeMapa(float *x, float *y, float *lado);
+static void retanguloPainelMapa(float *x, float *y, float *lado);
 
 
 /* ================================================================== */
@@ -571,6 +576,46 @@ unsigned char *converteRGBA(const unsigned char *rgb, int l, int a)
 
 GLuint atlas;
 static GLuint texturaVegetacao = 0;
+static GLuint texturaMaca3D = 0;
+#define MACA_GRADE 58
+#define MACA_TEX_LADO 64
+typedef struct { int x0, y0, x1, y1; float r, g, b; } RetanguloMaca;
+/* Mesma composicao, em ordem, para o icone da HUD e a maca extrudada. */
+static const RetanguloMaca formasMaca[] = {
+    {18,10,40,47, .18f,.035f,.025f}, {13,17,45,39, .18f,.035f,.025f},
+    {22,8,36,49, .18f,.035f,.025f}, {19,14,39,44, .72f,.025f,.035f},
+    {15,21,43,37, .72f,.025f,.035f}, {22,12,36,45, .72f,.025f,.035f},
+    {19,22,37,39, .95f,.045f,.07f}, {23,16,34,42, .95f,.045f,.07f},
+    {19,29,24,37, 1.f,.28f,.30f}, {24,36,30,40, 1.f,.28f,.30f},
+    {37,18,43,34, .48f,.015f,.025f}, {22,10,35,14, .48f,.015f,.025f},
+    {30,43,35,52, .28f,.10f,.035f}, {34,48,43,52, .16f,.38f,.08f},
+    {39,50,45,54, .16f,.38f,.08f}
+};
+static unsigned char pixelsMaca[MACA_TEX_LADO * MACA_TEX_LADO * 4];
+
+static void preparaTexturaMaca(void)
+{
+    size_t i;
+    int x, y;
+    memset(pixelsMaca, 0, sizeof(pixelsMaca));
+    for (i = 0; i < sizeof(formasMaca) / sizeof(formasMaca[0]); i++) {
+        const RetanguloMaca *f = &formasMaca[i];
+        for (y = f->y0; y < f->y1; y++) for (x = f->x0; x < f->x1; x++) {
+            size_t p = ((size_t)y * MACA_TEX_LADO + x) * 4u;
+            pixelsMaca[p] = (unsigned char)(f->r * 255.0f + 0.5f);
+            pixelsMaca[p + 1] = (unsigned char)(f->g * 255.0f + 0.5f);
+            pixelsMaca[p + 2] = (unsigned char)(f->b * 255.0f + 0.5f);
+            pixelsMaca[p + 3] = 255;
+        }
+    }
+    glGenTextures(1, &texturaMaca3D);
+    glBindTexture(GL_TEXTURE_2D, texturaMaca3D);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, MACA_TEX_LADO, MACA_TEX_LADO,
+                 0, GL_RGBA, GL_UNSIGNED_BYTE, pixelsMaca);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, atlas);
+}
 
 typedef struct {
     GLuint id;
@@ -589,6 +634,14 @@ TexturaUI texturaFomeVazia;
 TexturaUI texturaCoracaoCheio;
 TexturaUI texturaCoracaoMeio;
 TexturaUI texturaCoracaoVazio;
+static TexturaUI texturaPergaminho;
+static GLuint texturaTerrenoMapa = 0;
+/* A imagem detalhada usa um texel do atlas por pixel de cada bloco. */
+#define MAPA_DETALHE 16
+#define MAPA_TAMANHO_DETALHADO (LADO * MAPA_DETALHE)
+static int tamanhoTexturaMapa = MAPA_RESOLUCAO;
+static float zoomMapa = 1.0f, inicioMapaX = 0.0f, inicioMapaZ = 0.0f;
+static int arrastandoMapa = 0, ultimoMouseMapaX, ultimoMouseMapaY;
 
 static GLuint shaderAgua = 0;
 static GLint shaderAguaTempo = -1;
@@ -939,6 +992,7 @@ void carregaAtlas(void)
         glBindTexture(GL_TEXTURE_2D, atlas);
     }
 
+    preparaTexturaMaca();
     free(rgb);                              /* a placa de vídeo já tem a cópia */
     free(rgba);
 }
@@ -1021,7 +1075,7 @@ static TexturaUI carregaUmaTexturaPAM(const char *nome)
     return resultado;
 }
 
-static TexturaUI carregaUmaTexturaUI(const char *nome)
+static TexturaUI carregaTexturaUI(const char *nome, int removeFundoClaro)
 {
     TexturaUI resultado = { 0, 0, 0 };
     unsigned char *rgb, *rgba;
@@ -1038,6 +1092,24 @@ static TexturaUI carregaUmaTexturaUI(const char *nome)
         exit(1);
     }
 
+    if (removeFundoClaro) {
+        size_t i, total = (size_t)resultado.largura * resultado.altura;
+        /* O fundo claro e a linha preta na borda externa pertencem a imagem
+           de referencia, nao ao pergaminho. Preserve os contornos quentes. */
+        for (i = 0; i < total; i++) {
+            int r = rgba[4 * i], g = rgba[4 * i + 1], b = rgba[4 * i + 2];
+            int maior = r > g ? r : g, menor = r < g ? r : g;
+            size_t x = i % (size_t)resultado.largura;
+            size_t y = i / (size_t)resultado.largura;
+            if (b > maior) maior = b;
+            if (b < menor) menor = b;
+            if ((menor >= 200 && maior - menor <= 10) ||
+                ((x == 0 || y == 0 || x + 1 == (size_t)resultado.largura ||
+                  y + 1 == (size_t)resultado.altura) &&
+                 maior <= 30 && maior - menor <= 3)) rgba[4 * i + 3] = 0;
+        }
+    }
+
     glGenTextures(1, &resultado.id);
     glBindTexture(GL_TEXTURE_2D, resultado.id);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
@@ -1048,6 +1120,11 @@ static TexturaUI carregaUmaTexturaUI(const char *nome)
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     free(rgba);
     return resultado;
+}
+
+static TexturaUI carregaUmaTexturaUI(const char *nome)
+{
+    return carregaTexturaUI(nome, 0);
 }
 
 void carregaTexturasUI(void)
@@ -1063,6 +1140,7 @@ void carregaTexturasUI(void)
     texturaCoracaoCheio = carregaUmaTexturaPAM("assets/ui/coracao_cheio.pam");
     texturaCoracaoMeio = carregaUmaTexturaPAM("assets/ui/coracao_meio.pam");
     texturaCoracaoVazio = carregaUmaTexturaPAM("assets/ui/coracao_vazio.pam");
+    texturaPergaminho = carregaTexturaUI("assets/ui/mapa_pergaminho.ppm", 1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1743,6 +1821,64 @@ static void desenhaTocha(float tom)
     glEnable(GL_TEXTURE_2D);
 }
 
+/* Extrusao da silhueta do icone: frente/verso texturizados e somente
+   as laterais dos pixels expostos. A profundidade do mundo permanece ativa. */
+static void desenhaMacaNaCopa(void)
+{
+    const float uv = (float)MACA_GRADE / MACA_TEX_LADO;
+    int x, y;
+    float brilho = brilhoDaFaceAtual(0);
+    if (!texturaMaca3D) return;
+    glPushAttrib(GL_ENABLE_BIT | GL_TEXTURE_BIT | GL_CURRENT_BIT | GL_COLOR_BUFFER_BIT);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_ALPHA_TEST);
+    glAlphaFunc(GL_GREATER, 0.5f);
+    glBindTexture(GL_TEXTURE_2D, texturaMaca3D);
+    glColor3f(brilho, brilho, brilho);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(0, 0, 1);
+    glTexCoord2f(uv, 0); glVertex3f(1, 0, 1);
+    glTexCoord2f(uv, uv); glVertex3f(1, 1, 1);
+    glTexCoord2f(0, uv); glVertex3f(0, 1, 1);
+    glTexCoord2f(0, 0); glVertex3f(0, 0, 0);
+    glTexCoord2f(uv, 0); glVertex3f(1, 0, 0);
+    glTexCoord2f(uv, uv); glVertex3f(1, 1, 0);
+    glTexCoord2f(0, uv); glVertex3f(0, 1, 0);
+    glEnd();
+    glDisable(GL_TEXTURE_2D);
+    glBegin(GL_QUADS);
+    for (y = 0; y < MACA_GRADE; y++) for (x = 0; x < MACA_GRADE; x++) {
+        size_t p = ((size_t)y * MACA_TEX_LADO + x) * 4u;
+        float x0 = (float)x / MACA_GRADE, x1 = (float)(x + 1) / MACA_GRADE;
+        float y0 = (float)y / MACA_GRADE, y1 = (float)(y + 1) / MACA_GRADE;
+        int esquerda, direita, baixo, cima;
+        if (!pixelsMaca[p + 3]) continue;
+        esquerda = x == 0 || !pixelsMaca[p - 4 + 3];
+        direita = x + 1 == MACA_GRADE || !pixelsMaca[p + 4 + 3];
+        baixo = y == 0 || !pixelsMaca[p - MACA_TEX_LADO * 4 + 3];
+        cima = y + 1 == MACA_GRADE || !pixelsMaca[p + MACA_TEX_LADO * 4 + 3];
+        if (!esquerda && !direita && !baixo && !cima) continue;
+        glColor3f(pixelsMaca[p] / 255.0f * brilho * 0.78f,
+                  pixelsMaca[p + 1] / 255.0f * brilho * 0.78f,
+                  pixelsMaca[p + 2] / 255.0f * brilho * 0.78f);
+        if (esquerda) {
+            glVertex3f(x0,y0,0); glVertex3f(x0,y1,0); glVertex3f(x0,y1,1); glVertex3f(x0,y0,1);
+        }
+        if (direita) {
+            glVertex3f(x1,y0,0); glVertex3f(x1,y1,0); glVertex3f(x1,y1,1); glVertex3f(x1,y0,1);
+        }
+        if (baixo) {
+            glVertex3f(x0,y0,0); glVertex3f(x1,y0,0); glVertex3f(x1,y0,1); glVertex3f(x0,y0,1);
+        }
+        if (cima) {
+            glVertex3f(x0,y1,0); glVertex3f(x1,y1,0); glVertex3f(x1,y1,1); glVertex3f(x0,y1,1);
+        }
+    }
+    glEnd();
+    glPopAttrib();
+}
+
 void blocoEm(int tipo, int x, int y, int z)
 {
     /* soma par: tom normal; soma ímpar: um pouco mais escuro (xadrez).
@@ -1767,9 +1903,9 @@ void blocoEm(int tipo, int x, int y, int z)
                           (unsigned int)z * 13u + sementeMundo) % 19u == 0u) {
         /* Macas decorativas acompanham a copa; a coleta continua nas folhas. */
         glPushMatrix();
-        glTranslatef(0.40f, 0.30f, 0.94f);
-        glScalef(0.20f, 0.22f, 0.14f);
-        desenhaBloco(MACA, 1.0f, TODAS_FACES);
+        glTranslatef(0.25f, 0.20f, 0.99f);
+        glScalef(0.50f, 0.50f, 0.075f);
+        desenhaMacaNaCopa();
         glPopMatrix();
     }
     glPopMatrix();
@@ -2773,11 +2909,196 @@ void posicionaCamera(void)
 
 int teclas[256];        /* teclas de caractere: 1 pressionada, 0 solta */
 int especiais[256];     /* teclas especiais (setas, F5): idem */
+static void retanguloIconeMapa(float *x, float *y, float *lado)
+{
+    const float larguraBarra = NUM_ITENS * 58.0f + (NUM_ITENS - 1) * 6.0f + 24.0f;
+    float barraX = (larguraJanela - larguraBarra) / 2.0f;
+#if DEMO_UI_FIXED_BAR
+    barraX = DEMO_UI_FIXED_BAR_X;
+#endif
+    *lado = fminf(48.0f, fmaxf(1.0f, larguraJanela - 8.0f));
+    if (barraX + larguraBarra + 8.0f + *lado <= larguraJanela - 4.0f) {
+        *x = barraX + larguraBarra + 8.0f;
+        *y = 32.0f;
+    } else {
+        *x = fmaxf(4.0f, larguraJanela - *lado - 8.0f);
+        *y = fmaxf(4.0f, fminf(130.0f, alturaJanela - *lado - 4.0f));
+    }
+}
+
+static void retanguloPainelMapa(float *x, float *y, float *lado)
+{
+    *lado = fmaxf(1.0f, fminf((float)larguraJanela - 24.0f,
+                               (float)alturaJanela - 36.0f));
+    *x = (larguraJanela - *lado) * 0.5f;
+    *y = (alturaJanela - *lado) * 0.5f;
+}
+
+static void areaTerrenoMapa(float *x, float *y, float *lado)
+{
+    float px, py, painel;
+    retanguloPainelMapa(&px, &py, &painel);
+    *lado = painel * (painel < 400.0f ? 0.72f : 0.85f);
+    *x = px + (painel - *lado) * 0.5f;
+    *y = py + painel * (painel < 400.0f ? 0.20f : 0.11f);
+}
+
+static void limitaVistaMapa(void)
+{
+    float limite = 1.0f - 1.0f / zoomMapa;
+    inicioMapaX = fmaxf(0.0f, fminf(limite, inicioMapaX));
+    inicioMapaZ = fmaxf(0.0f, fminf(limite, inicioMapaZ));
+}
+
+/* Projecao ortografica da superficie: compoe, de baixo para cima, os
+   texels das faces superiores reais. Nao depende dos chunks carregados,
+   da camera ou do horario; folhas e vidro conservam o alfa do atlas. */
+static unsigned char *geraSuperficieMapa(void)
+{
+    unsigned char atlasPixels[64 * 64 * 4];
+    unsigned char vegetacaoPixels[16 * 16 * 4];
+    unsigned char cores[27][3];
+    unsigned char *pixels = (unsigned char *)calloc((size_t)MAPA_TAMANHO_DETALHADO * MAPA_TAMANHO_DETALHADO, 3);
+    int x, z, y, sx, sz, tipo;
+    GLfloat cor[4];
+    if (!pixels) return NULL;
+    glPushAttrib(GL_CURRENT_BIT | GL_TEXTURE_BIT | GL_PIXEL_MODE_BIT);
+    glBindTexture(GL_TEXTURE_2D, atlas);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, atlasPixels);
+    glBindTexture(GL_TEXTURE_2D, texturaVegetacao);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, vegetacaoPixels);
+    for (tipo = 0; tipo < 27; tipo++) {
+        corDaFace(tipo, 1.0f, 1.0f);
+        glGetFloatv(GL_CURRENT_COLOR, cor);
+        cores[tipo][0] = (unsigned char)(cor[0] * 255.0f);
+        cores[tipo][1] = (unsigned char)(cor[1] * 255.0f);
+        cores[tipo][2] = (unsigned char)(cor[2] * 255.0f);
+    }
+    glPopAttrib();
+    for (z = 0; z < LADO; z++) for (x = 0; x < LADO; x++) {
+        int base = 0;
+        for (y = ALTURA_MUNDO - 1; y >= 0; y--) {
+            tipo = mundo[x][y][z];
+            if (tipo != VAZIO && tipo != NUVEM && tipo != TOCHA && blocoOpaco(tipo)) {
+                base = y;
+                break;
+            }
+        }
+        for (y = base; y < ALTURA_MUNDO; y++) {
+            int celula, proximo, vegetacao = 0;
+            tipo = mundo[x][y][z];
+            if (tipo == VAZIO || tipo == NUVEM) continue;
+            proximo = y + 1 < ALTURA_MUNDO ? mundo[x][y + 1][z] : VAZIO;
+            if (tipo != TOCHA && !faceVisivel(tipo, proximo)) continue;
+            if (tipo == GRAMA && proximo == VAZIO && y == alturaDoTerreno(x, z)) {
+                unsigned int h = (unsigned int)x * 374761393u ^ (unsigned int)z * 668265263u ^ sementeMundo;
+                vegetacao = h % 5u == 0;
+            }
+            celula = celulaDaFace(tipo, FACE_TOPO);
+            for (sz = 0; sz < MAPA_DETALHE; sz++) for (sx = 0; sx < MAPA_DETALHE; sx++) {
+                size_t d = ((size_t)(z * MAPA_DETALHE + sz) * MAPA_TAMANHO_DETALHADO + x * MAPA_DETALHE + sx) * 3u;
+                int r, g, b, alfa = 255, c;
+                if (tipo == TOCHA && (sx < 6 || sx > 9 || sz < 6 || sz > 9)) continue;
+                if (celula != SEM_TEXTURA) {
+                    int a = (((celula / 4) * 16 + sz) * 64 + (celula % 4) * 16 + sx) * 4;
+                    r = atlasPixels[a]; g = atlasPixels[a + 1]; b = atlasPixels[a + 2]; alfa = atlasPixels[a + 3];
+                } else if (tipo >= 0 && tipo < 27) {
+                    r = cores[tipo][0]; g = cores[tipo][1]; b = cores[tipo][2];
+                } else { r = 255; g = 0; b = 255; }
+                /* Mistura por camada preserva a superficie sob vidro e vazados. */
+                for (c = 0; c < 3; c++) {
+                    int fonte = c == 0 ? r : c == 1 ? g : b;
+                    pixels[d + c] = (unsigned char)((fonte * alfa + pixels[d + c] * (255 - alfa) + 127) / 255);
+                }
+                /* As duas laminas verticais da vegetacao vistas de cima. */
+                if (vegetacao && sx >= 2 && sx <= 13 &&
+                    (sz == sx || sz == 15 - sx)) {
+                    int a = (10 * 16 + sx) * 4;
+                    if (vegetacaoPixels[a + 3]) {
+                        pixels[d] = vegetacaoPixels[a];
+                        pixels[d + 1] = vegetacaoPixels[a + 1];
+                        pixels[d + 2] = vegetacaoPixels[a + 2];
+                    }
+                }
+            }
+        }
+    }
+    return pixels;
+}
+
+static void abreMapa(void)
+{
+    unsigned char *pixels = NULL;
+    GLint limite = 0;
+    GLenum erroTextura;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &limite);
+    if (limite >= MAPA_TAMANHO_DETALHADO) pixels = geraSuperficieMapa();
+    tamanhoTexturaMapa = pixels ? MAPA_TAMANHO_DETALHADO : MAPA_RESOLUCAO;
+    if (!pixels) {
+        pixels = (unsigned char *)malloc((size_t)MAPA_RESOLUCAO * MAPA_RESOLUCAO * 3u);
+        if (!pixels) { fprintf(stderr, "Memoria insuficiente para abrir o mapa.\n"); return; }
+        geraPixelsMapa(pixels);
+    }
+    if (!texturaTerrenoMapa) glGenTextures(1, &texturaTerrenoMapa);
+    glBindTexture(GL_TEXTURE_2D, texturaTerrenoMapa);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    while (glGetError() != GL_NO_ERROR) { /* descarta erros anteriores */ }
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tamanhoTexturaMapa, tamanhoTexturaMapa, 0,
+                 GL_RGB, GL_UNSIGNED_BYTE, pixels);
+    free(pixels);
+    erroTextura = glGetError();
+    if (erroTextura != GL_NO_ERROR && tamanhoTexturaMapa == MAPA_TAMANHO_DETALHADO) {
+        tamanhoTexturaMapa = MAPA_RESOLUCAO;
+        pixels = (unsigned char *)malloc((size_t)MAPA_RESOLUCAO * MAPA_RESOLUCAO * 3u);
+        if (!pixels) { glPixelStorei(GL_UNPACK_ALIGNMENT, 4); return; }
+        geraPixelsMapa(pixels);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tamanhoTexturaMapa, tamanhoTexturaMapa, 0,
+                     GL_RGB, GL_UNSIGNED_BYTE, pixels);
+        free(pixels);
+        if (glGetError() != GL_NO_ERROR) {
+            fprintf(stderr, "Nao foi possivel criar a textura do mapa.\n");
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glBindTexture(GL_TEXTURE_2D, atlas);
+            return;
+        }
+    } else if (erroTextura != GL_NO_ERROR) {
+        fprintf(stderr, "Nao foi possivel criar a textura do mapa.\n");
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glBindTexture(GL_TEXTURE_2D, atlas);
+        return;
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, atlas);
+    zoomMapa = 1.0f; inicioMapaX = inicioMapaZ = 0.0f; arrastandoMapa = 0;
+    memset(teclas, 0, sizeof(teclas));
+    memset(especiais, 0, sizeof(especiais));
+    estadoJogo = ESTADO_MAPA;
+    liberaCursor();
+}
+
+static void fechaMapa(void)
+{
+    arrastandoMapa = 0;
+    memset(teclas, 0, sizeof(teclas));
+    memset(especiais, 0, sizeof(especiais));
+    estadoJogo = ESTADO_JOGANDO;
+    ultimoTempo = glutGet(GLUT_ELAPSED_TIME);
+    capturaCursor();
+}
+
 void teclado(unsigned char tecla, int x, int y)
 {
     (void)x; (void)y;                       /* posição do mouse: não usada */
 
     teclas[tolower(tecla)] = 1;             /* estado: para as ações contínuas */
+
+    if (estadoJogo == ESTADO_MAPA) {
+        if (tecla == 27 || tecla == 9) fechaMapa();
+        glutPostRedisplay();
+        return;
+    }
 
     if (estadoJogo == ESTADO_MENU_PRINCIPAL) {
         if (tecla == 27 || tolower(tecla) == 'q') exit(0);
@@ -2935,6 +3256,16 @@ void movimentoMouse(int x, int y)
     int cx = larguraJanela / 2, cy = alturaJanela / 2;
     int dx = x - cx, dy = y - cy;
 
+    if (estadoJogo == ESTADO_MAPA && arrastandoMapa) {
+        float mx, my, lado;
+        areaTerrenoMapa(&mx, &my, &lado);
+        inicioMapaX -= (x - ultimoMouseMapaX) / (lado * zoomMapa);
+        inicioMapaZ -= (y - ultimoMouseMapaY) / (lado * zoomMapa);
+        ultimoMouseMapaX = x; ultimoMouseMapaY = y;
+        limitaVistaMapa();
+        glutPostRedisplay();
+        return;
+    }
     if (estadoJogo != ESTADO_JOGANDO) {
         movimentoInterface(x, y);
         return;
@@ -3008,6 +3339,29 @@ void alternaCaptura(void)
 /* Clique com o cursor liberado: captura de novo */
 void cliqueMouse(int botao, int estado, int x, int y)
 {
+    if (estadoJogo == ESTADO_MAPA) {
+        float px, py, lado, fechar, mx, my, ml;
+        if (botao == GLUT_LEFT_BUTTON && estado == GLUT_UP) {
+            arrastandoMapa = 0;
+            return;
+        }
+        if (estado != GLUT_DOWN) return;
+        retanguloPainelMapa(&px, &py, &lado);
+        fechar = fminf(30.0f, lado * 0.12f);
+        if (botao == GLUT_LEFT_BUTTON && x >= px + lado - fechar - 4.0f &&
+            x <= px + lado - 4.0f && alturaJanela - y >= py + lado - fechar - 4.0f &&
+            alturaJanela - y <= py + lado - 4.0f) {
+            fechaMapa();
+        } else {
+            areaTerrenoMapa(&mx, &my, &ml);
+            if (botao == GLUT_LEFT_BUTTON && x >= mx && x <= mx + ml &&
+                alturaJanela - y >= my && alturaJanela - y <= my + ml) {
+                arrastandoMapa = 1; ultimoMouseMapaX = x; ultimoMouseMapaY = y;
+            }
+        }
+        glutPostRedisplay();
+        return;
+    }
     if (estado != GLUT_DOWN) return;
 
     if (estadoJogo == ESTADO_INVENTARIO) {
@@ -3041,8 +3395,15 @@ void cliqueMouse(int botao, int estado, int x, int y)
         return;
     }
 
-    (void)x; (void)y;
     if (!cursorCapturado) {
+        float bx, by, lado;
+        retanguloIconeMapa(&bx, &by, &lado);
+        if (botao == GLUT_LEFT_BUTTON && x >= bx && x <= bx + lado &&
+            alturaJanela - y >= by && alturaJanela - y <= by + lado) {
+            abreMapa();
+            glutPostRedisplay();
+            return;
+        }
         capturaCursor();
         return;
     }
@@ -3079,8 +3440,18 @@ void mudaZoom(int direcao)
 
 void rodaMouse(int roda, int direcao, int x, int y)
 {
-    (void)roda; (void)x; (void)y;
-    if (estadoJogo == ESTADO_JOGANDO)
+    (void)roda;
+    if (estadoJogo == ESTADO_MAPA) {
+        float mx, my, lado, fx, fz, antes = 1.0f / zoomMapa;
+        areaTerrenoMapa(&mx, &my, &lado);
+        if (x < mx || x > mx + lado || alturaJanela - y < my || alturaJanela - y > my + lado) return;
+        fx = (x - mx) / lado;
+        fz = (y - (alturaJanela - my - lado)) / lado;
+        zoomMapa = fmaxf(1.0f, fminf(8.0f, zoomMapa * (direcao > 0 ? 1.5f : 1.0f / 1.5f)));
+        inicioMapaX += fx * (antes - 1.0f / zoomMapa);
+        inicioMapaZ += fz * (antes - 1.0f / zoomMapa);
+        limitaVistaMapa();
+    } else if (estadoJogo == ESTADO_JOGANDO)
         itemSelecionado = (itemSelecionado + (direcao > 0 ? 1 : NUM_ITENS - 1)) % NUM_ITENS;
     glutPostRedisplay();
 }
@@ -3256,7 +3627,7 @@ void atualiza(void)
         int dentroDaAgua = blocoNoMundo(px, py, pz) == AGUA ||
                            blocoNoMundo(px, py + 1, pz) == AGUA ||
                            blocoNoMundo(px, py + 2, pz) == AGUA;
-        audioAtualizaAgua(dentroDaAgua);
+        audioAtualizaAgua(dentroDaAgua || montariaNaAgua());
     }
     faseCaminhada += andou * FASE_POR_BLOCO;
     if (andou > 0.0f) amplitudeCaminhada += VELOCIDADE_AMPLITUDE * dt;
@@ -3460,6 +3831,153 @@ static void desenhaImagemUI(const TexturaUI *imagem,
     glDisable(GL_TEXTURE_2D);
 }
 
+static void desenhaIconeMapa(void)
+{
+    float x, y, lado;
+    retanguloIconeMapa(&x, &y, &lado);
+    glColor3f(0.08f, 0.07f, 0.05f);
+    retangulo(x, y, x + lado, y + lado);
+    desenhaImagemUI(&texturaPergaminho, x + 3.0f, y + 3.0f, lado - 6.0f, lado - 6.0f);
+    glColor3f(0.31f, 0.51f, 0.20f);
+    retangulo(x + lado * 0.22f, y + lado * 0.24f,
+              x + lado * 0.78f, y + lado * 0.78f);
+    glColor3f(0.22f, 0.40f, 0.74f);
+    retangulo(x + lado * 0.48f, y + lado * 0.24f,
+              x + lado * 0.58f, y + lado * 0.78f);
+}
+
+static void pontoMapa(float x, float y, float tamanho, float r, float g, float b)
+{
+    glColor3f(0.08f, 0.07f, 0.06f);
+    retangulo(x - tamanho - 1.5f, y - tamanho - 1.5f,
+              x + tamanho + 1.5f, y + tamanho + 1.5f);
+    glColor3f(r, g, b);
+    retangulo(x - tamanho, y - tamanho, x + tamanho, y + tamanho);
+}
+
+static void desenhaMarcadoresMapa(float mapaX, float mapaY, float mapaLado,
+                                  float lado, const float cores[4][3])
+{
+    static const int tipos[] = {-1, ANIMAL_CACHORRO, ANIMAL_PORCO, ANIMAL_CAVALO};
+    static const float offsets[][2] = {
+        {0,0}, {12,0}, {-12,0}, {0,12}, {0,-12},
+        {12,12}, {-12,12}, {12,-12}, {-12,-12}, {24,0}, {-24,0}
+    };
+    float colocados[4][2];
+    int quantidade = 0, i;
+    for (i = 0; i < 4; i++) {
+        float wx, wz, realX, realY, x = 0, y = 0;
+        unsigned tentativa;
+        if (i == 0) { wx = jogadorX; wz = jogadorZ; }
+        else if (!posicaoAnimalMapa(tipos[i], &wx, &wz)) continue;
+        if (wx < 0 || wx >= LADO || wz < 0 || wz >= LADO) continue;
+        realX = mapaX + (wx / LADO - inicioMapaX) * zoomMapa * mapaLado;
+        realY = mapaY + (1.0f - (wz / LADO - inicioMapaZ) * zoomMapa) * mapaLado;
+        if (realX < mapaX || realX > mapaX + mapaLado ||
+            realY < mapaY || realY > mapaY + mapaLado) continue;
+        for (tentativa = 0; tentativa < sizeof(offsets) / sizeof(offsets[0]); tentativa++) {
+            int j, livre = 1;
+            x = fmaxf(mapaX + 5.0f, fminf(mapaX + mapaLado - 5.0f, realX + offsets[tentativa][0]));
+            y = fmaxf(mapaY + 5.0f, fminf(mapaY + mapaLado - 5.0f, realY + offsets[tentativa][1]));
+            for (j = 0; j < quantidade; j++)
+                if (fabsf(x - colocados[j][0]) < 11.0f && fabsf(y - colocados[j][1]) < 11.0f)
+                    livre = 0;
+            if (livre) break;
+        }
+        if (fabsf(x - realX) > 1.0f || fabsf(y - realY) > 1.0f) {
+            glColor3f(0.06f, 0.06f, 0.05f);
+            glBegin(GL_LINES);
+            glVertex2f(realX, realY); glVertex2f(x, y);
+            glEnd();
+        }
+        pontoMapa(x, y, fmaxf(2.5f, fminf(4.0f, lado * 0.008f)),
+                  cores[i][0], cores[i][1], cores[i][2]);
+        colocados[quantidade][0] = x;
+        colocados[quantidade++][1] = y;
+        if (i == 0) {
+            float angulo = yaw * PI / 180.0f;
+            glColor3f(0.08f, 0.07f, 0.06f);
+            glBegin(GL_LINES);
+            glVertex2f(x, y);
+            glVertex2f(x + sinf(angulo) * 10.0f, y + cosf(angulo) * 10.0f);
+            glEnd();
+        }
+    }
+}
+
+static void desenhaMapa(void)
+{
+    static const float cores[4][3] = {
+        {0.23f, 0.76f, 1.00f}, {0.94f, 0.94f, 0.90f},
+        {1.00f, 0.48f, 0.63f}, {0.92f, 0.67f, 0.28f}
+    };
+    static const char *nomes[] = {"Steve", "Cachorro", "Porco", "Cavalo"};
+    float px, py, lado, mapaX, mapaY, mapaLado, fechar, comp, cx, cy;
+    int i;
+    retanguloPainelMapa(&px, &py, &lado);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(0.0f, 0.0f, 0.0f, 0.74f);
+    retangulo(0, 0, larguraJanela, alturaJanela);
+    glDisable(GL_BLEND);
+    desenhaImagemUI(&texturaPergaminho, px, py, lado, lado);
+
+    areaTerrenoMapa(&mapaX, &mapaY, &mapaLado);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, texturaTerrenoMapa);
+    glColor4f(1, 1, 1, 1);
+    glBegin(GL_QUADS);
+    glTexCoord2f(inicioMapaX, inicioMapaZ + 1.0f / zoomMapa); glVertex2f(mapaX, mapaY);
+    glTexCoord2f(inicioMapaX + 1.0f / zoomMapa, inicioMapaZ + 1.0f / zoomMapa); glVertex2f(mapaX + mapaLado, mapaY);
+    glTexCoord2f(inicioMapaX + 1.0f / zoomMapa, inicioMapaZ); glVertex2f(mapaX + mapaLado, mapaY + mapaLado);
+    glTexCoord2f(inicioMapaX, inicioMapaZ); glVertex2f(mapaX, mapaY + mapaLado);
+    glEnd();
+    glDisable(GL_TEXTURE_2D);
+
+    glEnable(GL_SCISSOR_TEST);
+    glScissor((int)mapaX, (int)mapaY, (int)mapaLado, (int)mapaLado);
+    desenhaMarcadoresMapa(mapaX, mapaY, mapaLado, lado, cores);
+    glDisable(GL_SCISSOR_TEST);
+
+    /* Rosa fixa: -Z e norte, +X e leste. */
+    comp = fminf(62.0f, mapaLado * 0.22f);
+    cx = mapaX + mapaLado - comp * 0.55f;
+    cy = mapaY + mapaLado - comp * 0.55f;
+    glEnable(GL_BLEND);
+    glColor4f(0.05f, 0.05f, 0.04f, 0.70f);
+    retangulo(cx - comp * 0.5f, cy - comp * 0.5f,
+              cx + comp * 0.5f, cy + comp * 0.5f);
+    glDisable(GL_BLEND);
+    glColor3f(1.0f, 0.96f, 0.82f);
+    glBegin(GL_LINES);
+    glVertex2f(cx, cy - comp * 0.20f); glVertex2f(cx, cy + comp * 0.20f);
+    glVertex2f(cx - comp * 0.20f, cy); glVertex2f(cx + comp * 0.20f, cy);
+    glEnd();
+    desenhaTextoCentralizado(GLUT_BITMAP_HELVETICA_12, cx, cy + comp * 0.26f, "N");
+    desenhaTextoCentralizado(GLUT_BITMAP_HELVETICA_12, cx, cy - comp * 0.42f, "S");
+    desenhaTextoCentralizado(GLUT_BITMAP_HELVETICA_12, cx - comp * 0.36f, cy - 4.0f, "O");
+    desenhaTextoCentralizado(GLUT_BITMAP_HELVETICA_12, cx + comp * 0.36f, cy - 4.0f, "L");
+
+    /* A legenda usa duas linhas em paineis pequenos para evitar sobreposicao. */
+    for (i = 0; i < 4; i++) {
+        int colunas = lado < 400.0f ? 2 : 4;
+        int coluna = i % colunas, linha = i / colunas;
+        float lx = mapaX + coluna * mapaLado / colunas + 4.0f;
+        float ly = colunas == 2 ? py + 5.0f + (1 - linha) * 14.0f
+                                : py + lado * 0.065f;
+        pontoMapa(lx, ly + 4.0f, 3.0f, cores[i][0], cores[i][1], cores[i][2]);
+        glColor3f(0.13f, 0.10f, 0.08f);
+        escreve(GLUT_BITMAP_HELVETICA_12, lx + 8.0f, ly, nomes[i]);
+    }
+    fechar = fminf(30.0f, lado * 0.12f);
+    glColor3f(0.18f, 0.13f, 0.10f);
+    retangulo(px + lado - fechar - 4.0f, py + lado - fechar - 4.0f,
+              px + lado - 4.0f, py + lado - 4.0f);
+    glColor3f(1.0f, 0.96f, 0.84f);
+    desenhaTextoCentralizado(GLUT_BITMAP_HELVETICA_12, px + lado - fechar * 0.5f - 4.0f,
+                             py + lado - fechar * 0.5f - 8.0f, "X");
+}
+
 static float larguraLimitada(float larguraOriginal, float larguraMaxima,
                              float margem)
 {
@@ -3582,40 +4100,15 @@ static void desenhaMira(void)
 static void desenhaIconeMaca(float x, float y, float lado)
 {
     float s = lado / 58.0f;
+    size_t i;
 
     glDisable(GL_TEXTURE_2D);
     glDisable(GL_DEPTH_TEST);
-
-    /* Silhueta escura em degraus, para manter o aspecto pixel art. */
-    glColor3f(0.18f, 0.035f, 0.025f);
-    retangulo(x + 18.0f*s, y + 10.0f*s, x + 40.0f*s, y + 47.0f*s);
-    retangulo(x + 13.0f*s, y + 17.0f*s, x + 45.0f*s, y + 39.0f*s);
-    retangulo(x + 22.0f*s, y + 8.0f*s,  x + 36.0f*s, y + 49.0f*s);
-
-    /* Corpo vermelho com duas saliências no topo. */
-    glColor3f(0.72f, 0.025f, 0.035f);
-    retangulo(x + 19.0f*s, y + 14.0f*s, x + 39.0f*s, y + 44.0f*s);
-    retangulo(x + 15.0f*s, y + 21.0f*s, x + 43.0f*s, y + 37.0f*s);
-    retangulo(x + 22.0f*s, y + 12.0f*s, x + 36.0f*s, y + 45.0f*s);
-
-    glColor3f(0.95f, 0.045f, 0.07f);
-    retangulo(x + 19.0f*s, y + 22.0f*s, x + 37.0f*s, y + 39.0f*s);
-    retangulo(x + 23.0f*s, y + 16.0f*s, x + 34.0f*s, y + 42.0f*s);
-
-    /* Brilho e sombra lateral. */
-    glColor3f(1.0f, 0.28f, 0.30f);
-    retangulo(x + 19.0f*s, y + 29.0f*s, x + 24.0f*s, y + 37.0f*s);
-    retangulo(x + 24.0f*s, y + 36.0f*s, x + 30.0f*s, y + 40.0f*s);
-    glColor3f(0.48f, 0.015f, 0.025f);
-    retangulo(x + 37.0f*s, y + 18.0f*s, x + 43.0f*s, y + 34.0f*s);
-    retangulo(x + 22.0f*s, y + 10.0f*s, x + 35.0f*s, y + 14.0f*s);
-
-    /* Cabinho e folha. */
-    glColor3f(0.28f, 0.10f, 0.035f);
-    retangulo(x + 30.0f*s, y + 43.0f*s, x + 35.0f*s, y + 52.0f*s);
-    glColor3f(0.16f, 0.38f, 0.08f);
-    retangulo(x + 34.0f*s, y + 48.0f*s, x + 43.0f*s, y + 52.0f*s);
-    retangulo(x + 39.0f*s, y + 50.0f*s, x + 45.0f*s, y + 54.0f*s);
+    for (i = 0; i < sizeof(formasMaca) / sizeof(formasMaca[0]); i++) {
+        const RetanguloMaca *f = &formasMaca[i];
+        glColor3f(f->r, f->g, f->b);
+        retangulo(x + f->x0*s, y + f->y0*s, x + f->x1*s, y + f->y1*s);
+    }
 }
 
 static void desenhaIconeFerramenta(int tipo, float x, float y, float lado)
@@ -4215,6 +4708,7 @@ static void desenhaInstrucoes(void)
         { "Queda",              "causa dano acima de 3 blocos" },
         { "Hora",               "ciclo de dia e noite" },
         { "Tab",                "liberar ou capturar o cursor" },
+        { "Tab + icone mapa",   "abrir mapa; ESC fecha" },
         { "V ou F5",            "alternar primeira/terceira pessoa" },
         { "P",                  "alternar perspectiva/ortografica" },
         { "+ / -",              "aproximar ou afastar" },
@@ -4311,9 +4805,15 @@ void desenhaInterface(void)
     if (estadoJogo == ESTADO_JOGANDO) {
         desenhaMira();
         desenhaBarraItens();
+        desenhaIconeMapa();
         desenhaCoracoesVida();
         desenhaIconesFome();
         desenhaInformacoes();
+        return;
+    }
+
+    if (estadoJogo == ESTADO_MAPA) {
+        desenhaMapa();
         return;
     }
 

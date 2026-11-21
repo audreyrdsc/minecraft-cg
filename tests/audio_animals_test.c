@@ -11,7 +11,8 @@ int main(void)
     assert(latidoTocando && latidosPendentes == 0);
     audioAlertaCachorro();
     assert(latidosPendentes == 1);
-    Sleep(1800);
+    /* Simula o fim do primeiro buffer sem depender da latencia do dispositivo. */
+    waveOutReset(buscaEfeito("sndDog")->saida);
     audioAtualizaLatidos();
     assert(latidoTocando && latidosPendentes == 0);
     audioMontaria();
@@ -24,11 +25,31 @@ int main(void)
     audioPorcoProximo();
     assert(!(buscaEfeito("sndPig")->buffer.dwFlags & WHDR_DONE));
     assert(buscaEfeito("sndWalk") && buscaEfeito("sndWalkOther") && buscaEfeito("sndGlass"));
+    assert(buscaEfeito("sndWater"));
+    audioAtualizaAgua(0);
+    audioAtualizaAgua(1);
+    assert(estavaNaAgua && !(buscaEfeito("sndWater")->buffer.dwFlags & WHDR_DONE));
+    waveOutReset(buscaEfeito("sndWater")->saida);
+    audioAtualizaAgua(1);
+    assert(buscaEfeito("sndWater")->buffer.dwFlags & WHDR_DONE);
+    audioAtualizaAgua(0);
+    audioAtualizaAgua(1);
+    assert(!(buscaEfeito("sndWater")->buffer.dwFlags & WHDR_DONE));
     audioAtualizaPassos(0.0f, 1, GRAMA);
     assert(!(buscaEfeito("sndWalk")->buffer.dwFlags & WHDR_DONE));
     assert(tempoProximoPasso == 0.50f);
+    {
+        int tipos[] = { GRAMA, PEDRA, TERRA, AREIA, NEVE, TRONCO, TRONCO_CEREJEIRA };
+        unsigned i;
+        for (i = 0; i < sizeof(tipos) / sizeof(tipos[0]); i++) {
+            assert(usaSomPassoGrama(tipos[i]));
+            audioAtualizaPassos(0.0f, 0, VAZIO);
+            audioAtualizaPassos(0.0f, 1, tipos[i]);
+            assert(tempoProximoPasso == 0.50f);
+        }
+    }
     audioAtualizaPassos(0.0f, 0, VAZIO);
-    audioAtualizaPassos(0.0f, 1, PEDRA);
+    audioAtualizaPassos(0.0f, 1, VIDRO);
     assert(!(buscaEfeito("sndWalkOther")->buffer.dwFlags & WHDR_DONE));
     assert(tempoProximoPasso == 0.38f);
     audioAtualizaGalope(1); assert(indiceGalope == 0);

@@ -45,8 +45,23 @@ int main(void)
     construirMundo();
     iniciaAnimais();
     for (i = 0; i < NUM_ANIMAIS; i++) assert(animais[i].ativo);
-    assert(animais[ANIMAL_CAVALO].x == 12.0f && animais[ANIMAL_CAVALO].y == 3.0f &&
-           animais[ANIMAL_CAVALO].z == 2.5f && animalLivre(12.0f, 3.0f, 2.5f, 2.3f));
+    for (i = 0; i < NUM_ANIMAIS; i++) {
+        float mapaX, mapaZ;
+        assert(posicaoAnimalMapa(i, &mapaX, &mapaZ));
+        assert(mapaX == animais[i].x && mapaZ == animais[i].z);
+    }
+    assert(!posicaoAnimalMapa(-1, &distanciaAntes, &distanciaDepois));
+    assert(animais[ANIMAL_CAVALO].x == 91.76f && animais[ANIMAL_CAVALO].y == 4.01f &&
+           animais[ANIMAL_CAVALO].z == 6.70f && animalLivre(91.76f, 4.01f, 6.70f, 2.3f));
+    assert(chaoSeguroAnimal(91, 6) == 4);
+    mundo[91][4][6] = PEDRA;
+    iniciaAnimais();
+    assert(animais[ANIMAL_CAVALO].ativo &&
+           animalLivre(animais[ANIMAL_CAVALO].x, animais[ANIMAL_CAVALO].y,
+                       animais[ANIMAL_CAVALO].z, 2.3f));
+    assert(hypotf(animais[ANIMAL_CAVALO].x - 91.76f,
+                  animais[ANIMAL_CAVALO].z - 6.70f) < 3.0f);
+    mundo[91][4][6] = VAZIO;
     assert(mundo[26][4][7] == TRONCO_CEREJEIRA);
     assert(mundo[30][1][31] == AGUA);
     assert(mundo[30][3][42] == GRAMA);
@@ -125,8 +140,60 @@ int main(void)
     animais[ANIMAL_CAVALO].x = 10.0f;
     assert(carregaJogo(caminho));
     assert(jogadorMontado() && animais[ANIMAL_CAVALO].x > xCavalo);
+    {
+        float mapaX, mapaZ;
+        assert(posicaoAnimalMapa(ANIMAL_CAVALO, &mapaX, &mapaZ));
+        assert(mapaX == animais[ANIMAL_CAVALO].x && mapaZ == animais[ANIMAL_CAVALO].z);
+    }
     assert(alternaMontaria() && !jogadorMontado());
     assert(montariasTeste == 2);
+
+    /* A agua pode tocar o cavalo enquanto os pes de Steve estao acima dela. */
+    animais[ANIMAL_CAVALO].x = 40.5f;
+    animais[ANIMAL_CAVALO].y = 1.0f;
+    animais[ANIMAL_CAVALO].z = 40.5f;
+    animais[ANIMAL_CAVALO].velocidadeY = 0.0f;
+    jogadorX = 40.5f; jogadorY = 2.15f; jogadorZ = 40.5f;
+    cavaloMontado = 1;
+    mundo[40][1][40] = AGUA;
+    assert(blocoNoMundo(40, (int)floorf(jogadorY + 0.15f), 40) == VAZIO);
+    assert(montariaNaAgua());
+    mundo[40][1][40] = VAZIO;
+    assert(!montariaNaAgua());
+    mundo[41][1][40] = AGUA; /* tambem detecta a borda do corpo */
+    assert(montariaNaAgua());
+    cavaloMontado = 0; assert(!montariaNaAgua());
+    mundo[41][1][40] = VAZIO;
+
+    /* Salto com deslocamento: superar e aterrissar em uma plataforma. */
+    cavaloMontado = 1;
+    for (x = 42; x <= 46; x++)
+        for (z = 39; z <= 41; z++) mundo[x][1][z] = PEDRA;
+    {
+        float maiorY = animais[ANIMAL_CAVALO].y;
+        for (i = 0; i < 50; i++) {
+            moveMontaria(i < 30 ? 0.1f : 0.0f, 0.0f, 0.05f, i == 0);
+            if (animais[ANIMAL_CAVALO].y > maiorY) maiorY = animais[ANIMAL_CAVALO].y;
+        }
+        assert(maiorY > 2.1f && animais[ANIMAL_CAVALO].x > 43.0f);
+        assert(fabsf(animais[ANIMAL_CAVALO].y - 2.0f) < 0.06f);
+        assert(animalLivre(animais[ANIMAL_CAVALO].x, animais[ANIMAL_CAVALO].y,
+                           animais[ANIMAL_CAVALO].z, 2.3f));
+        alturaAntes = animais[ANIMAL_CAVALO].y;
+        moveMontaria(0.0f, 0.0f, 0.05f, 1);
+        assert(animais[ANIMAL_CAVALO].y > alturaAntes);
+
+        /* Com quadros de 100 ms, o salto tambem vence o mesmo obstaculo. */
+        animais[ANIMAL_CAVALO].x = 40.5f;
+        animais[ANIMAL_CAVALO].y = 1.0f;
+        animais[ANIMAL_CAVALO].z = 40.5f;
+        animais[ANIMAL_CAVALO].velocidadeY = 0.0f;
+        for (i = 0; i < 25; i++)
+            moveMontaria(i < 15 ? 0.2f : 0.0f, 0.0f, 0.1f, i == 0);
+        assert(animais[ANIMAL_CAVALO].x > 43.0f &&
+               fabsf(animais[ANIMAL_CAVALO].y - 2.0f) < 0.06f);
+    }
+    cavaloMontado = 0;
 
     /* Cada inimigo gera exatamente um alerta na entrada, inclusive a 5m. */
     memset(zumbis, 0, sizeof(zumbis));

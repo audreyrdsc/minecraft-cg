@@ -27,14 +27,31 @@ intervalo das 18h às 6h.
   brilho animado.
 - O mundo tem 128 × 128 colunas (quatro vezes a área de 64 × 64), com
   árvores de maçã, cerejeiras, planícies, lagos, rio sinuoso e vegetação baixa.
+  As maçãs decorativas das copas usam o desenho pixelado do ícone com
+  espessura 3D; a coleta continua acontecendo ao quebrar folhas.
   No mundo novo, procure o bosque próximo de (26, 7), o rio ao redor de
   z=28–32 e a planície aproximadamente em x=20–55, z=37–55 (coordenadas x, z).
 - Porco e cavalo caminham pelo cenário; o cachorro segue Steve. Perto do
   cavalo, `M` monta ou desmonta, e os controles de movimento e salto conduzem
-  a montaria. Em mundos novos o cavalo surge em (12, 3, 2.5), se livre.
+  a montaria; `Espaço` permite saltar sobre blocos de um bloco de altura.
+  A entrada na água a cavalo também reproduz o som de respingo. Em mundos
+  novos o cavalo surge em (91.76, 4.01, 6.70), se o
+  ponto estiver livre e apoiado; em outras seeds busca um local seguro próximo.
   O nome Steve aparece acima do personagem em terceira pessoa.
 - A HUD possui corações, fome e saturação em ícones pixelados, barra de itens,
   vida sobre inimigos e feedback de combate.
+- Um mapa do mundo inteiro aparece sobre um pergaminho, com terreno e
+  construções atuais, posições de Steve e dos animais, legenda e rosa dos
+  ventos. A superfície é projetada a partir das faces superiores e texturas
+  reais dos blocos, incluindo transparências; a resolução normal é de
+  2048 × 2048 pixels (16 pixels por bloco), com alternativa em resolução
+  menor caso não haja suporte ou memória. A imagem é refeita ao abrir o mapa.
+  Cavernas e interiores cobertos não são exibidos nessa vista da superfície.
+  Pressione `Tab` para liberar o cursor e clique no ícone junto à
+  hotbar; `Tab`, `Esc` ou o botão `X` fecha o mapa. Use a roda do mouse sobre
+  o mapa para zoom e arraste com o botão esquerdo para percorrê-lo. A
+  simulação fica pausada enquanto ele está aberto. O norte corresponde a `-Z`
+  e o leste a `+X`.
 - Os sons ficam em `assets/audio/` no formato WAV: dano do jogador, comer,
   passos, quebra/coleta de blocos, vidro, água, ataque e morte de zumbi,
   spawn de zumbi, disparo e música noturna em repetição. O cachorro late duas
@@ -48,8 +65,9 @@ intervalo das 18h às 6h.
 - No Windows, a música noturna é reproduzida em um canal próprio e sua
   intensidade diminui suavemente durante os 60 segundos reais anteriores às
   6h. O esmaecimento é aplicado apenas à música, preservando o volume dos
-  efeitos sonoros. Passos na grama usam `walking.wav`; em outras superfícies,
-  o som anterior permanece em `walking-other.wav`. Os efeitos usam buffers
+  efeitos sonoros. Passos na grama, pedra, terra, areia, neve e madeira usam
+  `walking.wav`; em outras superfícies, o som anterior permanece em
+  `walking-other.wav`. Os efeitos usam buffers
   independentes, inclusive quando o caminho do projeto é longo, e podem tocar
   junto com a música.
 
@@ -316,6 +334,8 @@ O formato PPM (`P6`) não tem canal alfa. Na leitura, o jogo transforma o magent
 | Roda | Selecionar o próximo/anterior item | evento |
 | + / - | Aproximar / afastar (campo de visão) | evento |
 | Tab | Liberar / capturar o cursor (clicar na janela também captura) | evento |
+| Tab + clique no ícone de mapa | Abrir o mapa pausado; Tab, Esc ou X fecha | evento |
+| Roda e arraste no mapa | Ampliar / reduzir e percorrer o mapa | evento |
 | F5 ou V | Alternar primeira / terceira pessoa | evento |
 | P | Alternar perspectiva / ortográfica | evento |
 | ESC | Abrir / fechar a pausa ou voltar das instruções | evento |
@@ -331,13 +351,13 @@ O jogo começa no menu principal, com o cursor livre. Ao clicar em Jogar, o pers
 
 Os eixos do mundo são:
 
-- **x**: da esquerda (0) para a direita (63)
+- **x**: da esquerda (0) para a direita (127)
 - **y**: altura, a partir de 0, crescendo para cima
-- **z**: do fundo do mapa (0) para a frente (63), onde fica o mar
+- **z**: do fundo do mapa (0) para a frente (127)
 
 ### O mapa
 
-O terreno vem da matriz `mapa`, que mostra o mundo **visto de cima**. Cada linha é um valor de `z`, cada número na linha é um valor de `x`, e o número em si é a **altura** daquela coluna de blocos:
+Os primeiros 16 × 16 blocos horizontais usam a matriz didática `mapa`, vista de cima; o restante do terreno é gerado proceduralmente. Nessa matriz, cada linha é um valor de `z`, cada número na linha é um valor de `x`, e o número em si é a **altura** daquela coluna de blocos:
 
 | Valor | Significado |
 |---|---|
@@ -372,7 +392,7 @@ A mistura do vidro e da água usa a cor que já está na tela, então a ordem de
 
 ### A matriz do mundo
 
-`mundo[x][y][z]` guarda o tipo de cada bloco (ou `VAZIO`) numa grade de 64 × 16 × 64. Os primeiros 16 × 16 quadrados usam a matriz didática original; a extensão usa a seed `sementeMundo` e uma função procedural determinística. **Atenção à ordem**: o `mapa` é `[z][x]`, para parecer o mundo visto de cima, mas o `mundo` segue a ordem dos eixos, `[x][y][z]`. Todo acesso passa por `colocaBloco` e `blocoNoMundo`, que também testam os limites.
+`mundo[x][y][z]` guarda o tipo de cada bloco (ou `VAZIO`) numa grade de 128 × 16 × 128. Os primeiros 16 × 16 quadrados usam a matriz didática original; a extensão usa a seed `sementeMundo` e uma função procedural determinística. **Atenção à ordem**: o `mapa` é `[z][x]`, para parecer o mundo visto de cima, mas o `mundo` segue a ordem dos eixos, `[x][y][z]`. Todo acesso passa por `colocaBloco` e `blocoNoMundo`, que também testam os limites.
 
 A matriz é o que permite a colisão: a célula que contém um ponto `(px, py, pz)` é `(floor(px), floor(py), floor(pz))`, então saber se o personagem bate num bloco é consultar as poucas células que a caixa dele ocupa (`posicaoLivre`). Fora do mundo conta como sólido, e a água não é sólida.
 
@@ -394,19 +414,19 @@ As quatro demonstrações são modos temporários de compilação. Sem nenhuma m
 
 ```powershell
 # 1. Guardar somente GL_PROJECTION: a mira acompanha a câmera
-gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_MATRIX_ONLY=1 -o demonstracao\mine-matriz.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_MATRIX_ONLY=1 -o demonstracao\mine-matriz.exe -lglew32 -lfreeglut -lopengl32 -lglu32 -lwinmm
 .\demonstracao\mine-matriz.exe
 
 # 2. Barra em posição fixa: ela sai do centro ao redimensionar
-gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_FIXED_BAR=1 -o demonstracao\mine-barra.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_FIXED_BAR=1 -o demonstracao\mine-barra.exe -lglew32 -lfreeglut -lopengl32 -lglu32 -lwinmm
 .\demonstracao\mine-barra.exe
 
 # 3. Mouse sem converter a altura: clique e hover ficam espelhados
-gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_RAW_MOUSE_Y=1 -o demonstracao\mine-mouse.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_RAW_MOUSE_Y=1 -o demonstracao\mine-mouse.exe -lglew32 -lfreeglut -lopengl32 -lglu32 -lwinmm
 .\demonstracao\mine-mouse.exe
 
 # 4. Pausa sem reiniciar o tempo: o personagem avança de uma vez ao voltar
-gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_PAUSE_CLOCK=1 -o demonstracao\mine-pausa.exe -lglew32 -lfreeglut -lopengl32 -lglu32
+gcc mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c -DDEMO_UI_PAUSE_CLOCK=1 -o demonstracao\mine-pausa.exe -lglew32 -lfreeglut -lopengl32 -lglu32 -lwinmm
 .\demonstracao\mine-pausa.exe
 ```
 

@@ -351,6 +351,12 @@ void audioZumbiMorreu(void)
 }
 void audioComer(void) { tocaSom("sndEat"); }
 
+static int usaSomPassoGrama(int tipo)
+{
+    return tipo == GRAMA || tipo == PEDRA || tipo == TERRA || tipo == AREIA || tipo == NEVE ||
+           tipo == TRONCO || tipo == TRONCO_CEREJEIRA;
+}
+
 void audioAtualizaPassos(float dt, int andando, int blocoApoio)
 {
     if (!andando) {
@@ -359,9 +365,10 @@ void audioAtualizaPassos(float dt, int andando, int blocoApoio)
     }
     tempoProximoPasso -= dt;
     if (tempoProximoPasso <= 0.0f) {
-        tocaSom(blocoApoio == GRAMA ? "sndWalk" : "sndWalkOther");
+        int somGrama = usaSomPassoGrama(blocoApoio);
+        tocaSom(somGrama ? "sndWalk" : "sndWalkOther");
         /* O novo passo de grama tem cerca de 0,5 s; nao corta seu final. */
-        tempoProximoPasso = blocoApoio == GRAMA ? 0.50f : 0.38f;
+        tempoProximoPasso = somGrama ? 0.50f : 0.38f;
     }
 }
 
