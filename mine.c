@@ -161,6 +161,8 @@
 #define CEL_AGUA        8
 #define CEL_AREIA       9
 #define CEL_NEVE        10
+#define CEL_FOLHA_CEREJEIRA 12
+#define CEL_CASCA_CEREJEIRA 13
 #define SEM_TEXTURA     (-1)    /* nuvem e personagem: cor sólida */
 /* As 6 faces de um bloco, uma por bit, para dizer quais desenhar:
    FACE_TOPO | FACE_BASE são só o topo e a base */
@@ -280,7 +282,8 @@ typedef struct {
     int x, y, z;                    /* posição do bloco na matriz */
     float distancia;                /* ao olho, ao quadrado */
 } BlocoTransparente;
-#define MAX_TRANSPARENTES (LADO * ALTURA_MUNDO * LADO)
+/* Limite do cubo envolvente da distancia de desenho, nao do mundo inteiro. */
+#define MAX_TRANSPARENTES (59 * 59 * ALTURA_MUNDO)
 #ifndef CHUNK_LADO
 #define CHUNK_LADO 16
 #define NUM_CHUNKS_X ((LADO + CHUNK_LADO - 1) / CHUNK_LADO)
@@ -567,6 +570,7 @@ unsigned char *converteRGBA(const unsigned char *rgb, int l, int a)
 /* ------------------------------------------------------------------ */
 
 GLuint atlas;
+static GLuint texturaVegetacao = 0;
 
 typedef struct {
     GLuint id;
@@ -884,6 +888,24 @@ void carregaAtlas(void)
     }
     unsigned char *rgba = converteRGBA(rgb, l, a);
 
+    /* Deriva texturas pixeladas de cerejeira das celulas ja existentes. */
+    for (int py = 0; py < TAMANHO_CELULA; py++)
+        for (int px = 0; px < TAMANHO_CELULA; px++) {
+            int folha = ((16 + py) * l + 32 + px) * 4;
+            int rosa = ((48 + py) * l + px) * 4;
+            int casca = ((16 + py) * l + 16 + px) * 4;
+            int escura = ((48 + py) * l + 16 + px) * 4;
+            int variacao = rgba[folha + 1];
+            rgba[rosa] = (unsigned char)(150 + variacao / 3);
+            rgba[rosa + 1] = (unsigned char)(78 + variacao / 2);
+            rgba[rosa + 2] = (unsigned char)(118 + variacao / 3);
+            rgba[rosa + 3] = rgba[folha + 3];
+            rgba[escura] = rgba[casca] / 3;
+            rgba[escura + 1] = rgba[casca + 1] / 4;
+            rgba[escura + 2] = rgba[casca + 2] / 3;
+            rgba[escura + 3] = 255;
+        }
+
     glGenTextures(1, &atlas);
     glBindTexture(GL_TEXTURE_2D, atlas);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, l, a, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
@@ -891,6 +913,31 @@ void carregaAtlas(void)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     glEnable(GL_TEXTURE_2D);
+
+    {
+        unsigned char pixels[16 * 16 * 4] = {0};
+        for (int py = 0; py < 16; py++)
+            for (int px = 0; px < 16; px++) {
+                int folha = (px >= 2 && px <= 4 && py >= 4) ||
+                            (px >= 5 && px <= 7 && py >= 1) ||
+                            (px >= 8 && px <= 10 && py >= 3) ||
+                            (px >= 11 && px <= 13 && py >= 6) || py >= 13;
+                int p = (py * 16 + px) * 4;
+                if (folha) {
+                    int varia = (px * 13 + py * 7) % 35;
+                    pixels[p] = (unsigned char)(35 + varia);
+                    pixels[p + 1] = (unsigned char)(120 + varia * 2);
+                    pixels[p + 2] = (unsigned char)(18 + varia / 2);
+                    pixels[p + 3] = 255;
+                }
+            }
+        glGenTextures(1, &texturaVegetacao);
+        glBindTexture(GL_TEXTURE_2D, texturaVegetacao);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, atlas);
+    }
 
     free(rgb);                              /* a placa de vídeo já tem a cópia */
     free(rgba);
@@ -1045,6 +1092,8 @@ int celulaDaFace(int tipo, int face)
         case TERRA: return CEL_TERRA;
         case PEDRA: return CEL_PEDRA;
         case FOLHA: return CEL_FOLHA;
+        case FOLHA_CEREJEIRA: return CEL_FOLHA_CEREJEIRA;
+        case TRONCO_CEREJEIRA: return CEL_CASCA_CEREJEIRA;
         case AGUA:  return CEL_AGUA;
         case VIDRO: return CEL_VIDRO;
         case AREIA: return CEL_AREIA;
@@ -1083,7 +1132,7 @@ void coordenadasDaCelula(int celula, float *s0, float *t0, float *lado)
 
 int passadaDoBloco(int tipo)
 {
-    if (tipo == FOLHA) return PASSADA_RECORTE;
+    if (tipo == FOLHA || tipo == FOLHA_CEREJEIRA) return PASSADA_RECORTE;
     if (tipo == VIDRO || tipo == AGUA) return PASSADA_TRANSLUCIDA;
     return PASSADA_OPACA;
 }
@@ -1210,6 +1259,32 @@ static void constroiListaChunk(int chunkX, int chunkZ)
                     if (mundo[x][y][z] != VAZIO &&
                         passadaDoBloco(mundo[x][y][z]) == passada)
                         blocoEm(mundo[x][y][z], x, y, z);
+        if (passada == PASSADA_RECORTE && texturaVegetacao) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, texturaVegetacao);
+            glDisable(GL_CULL_FACE);
+            glColor3f(0.85f, 0.95f, 0.85f);
+            glBegin(GL_QUADS);
+            for (x = chunkX * CHUNK_LADO; x < (chunkX + 1) * CHUNK_LADO && x < LADO; x++)
+                for (z = chunkZ * CHUNK_LADO; z < (chunkZ + 1) * CHUNK_LADO && z < LADO; z++) {
+                    unsigned int h = (unsigned int)x * 374761393u ^ (unsigned int)z * 668265263u ^ sementeMundo;
+                    int chao = alturaDoTerreno(x, z);
+                    float y0 = (float)(chao + 1);
+                    if ((h % 5u) != 0 || chao + 1 >= ALTURA_MUNDO ||
+                        mundo[x][chao][z] != GRAMA || mundo[x][chao + 1][z] != VAZIO) continue;
+                    glTexCoord2f(0, 1); glVertex3f(x + 0.15f, y0, z + 0.15f);
+                    glTexCoord2f(1, 1); glVertex3f(x + 0.85f, y0, z + 0.85f);
+                    glTexCoord2f(1, 0); glVertex3f(x + 0.85f, y0 + 0.8f, z + 0.85f);
+                    glTexCoord2f(0, 0); glVertex3f(x + 0.15f, y0 + 0.8f, z + 0.15f);
+                    glTexCoord2f(0, 1); glVertex3f(x + 0.85f, y0, z + 0.15f);
+                    glTexCoord2f(1, 1); glVertex3f(x + 0.15f, y0, z + 0.85f);
+                    glTexCoord2f(1, 0); glVertex3f(x + 0.15f, y0 + 0.8f, z + 0.85f);
+                    glTexCoord2f(0, 0); glVertex3f(x + 0.85f, y0 + 0.8f, z + 0.15f);
+                }
+            glEnd();
+            glEnable(GL_CULL_FACE);
+            glBindTexture(GL_TEXTURE_2D, atlas);
+        }
         glEndList();
     }
     limpaMarcaChunk(chunkX, chunkZ);
@@ -1605,6 +1680,11 @@ void desenhaBloco(int tipo, float tom, int faces)
             float s[4] = { s0, s0 + lado, s0 + lado, s0 };
             float t[4] = { t0 + lado, t0 + lado, t0, t0 };
 
+            if (tipo == FOLHA_CEREJEIRA) {
+                float dia = sinf((tempoMundo - 0.25f) * 2.0f * PI);
+                if (dia < 0.0f) dia = 0.0f;
+                if (b < 0.16f + dia * 0.48f) b = 0.16f + dia * 0.48f;
+            }
             glColor3f(b, b, b);
             for (v = 0; v < 4; v++) {
                 glTexCoord2f(s[v], t[v]);
@@ -1683,6 +1763,15 @@ void blocoEm(int tipo, int x, int y, int z)
         desenhaTocha(tom);
     else
         desenhaBloco(tipo, tom, faces);
+    if (tipo == FOLHA && ((unsigned int)x * 31u + (unsigned int)y * 17u +
+                          (unsigned int)z * 13u + sementeMundo) % 19u == 0u) {
+        /* Macas decorativas acompanham a copa; a coleta continua nas folhas. */
+        glPushMatrix();
+        glTranslatef(0.40f, 0.30f, 0.94f);
+        glScalef(0.20f, 0.22f, 0.14f);
+        desenhaBloco(MACA, 1.0f, TODAS_FACES);
+        glPopMatrix();
+    }
     glPopMatrix();
 }
 
@@ -1852,6 +1941,35 @@ int blocoMirado(HitBloco *hit)
     return 0;
 }
 
+/* Olhar para baixo e clicar com um bloco selecionado ergue Steve um bloco,
+   desde que haja apoio e espaco livre. Retorna 1 se o clique foi tratado. */
+static int colocaBlocoSobJogador(void)
+{
+    int x, y, z, tipo;
+    if (pitch > -60.0f || jogadorMontado() || !jogadorNoChao()) return 0;
+    if (itemSelecionado < 0 || itemSelecionado >= NUM_ITENS) return 0;
+    tipo = tiposItens[itemSelecionado];
+    if (tipo == MACA || tipo == PICARETA || tipo == ESPADA || tipo == TOCHA ||
+        quantidadesItens[itemSelecionado] <= 0) return 0;
+    x = (int)floorf(jogadorX);
+    y = (int)floorf(jogadorY + 0.1f);
+    z = (int)floorf(jogadorZ);
+    if (fabsf(jogadorY - y) > 0.1f || !dentroDoMundo(x, y, z) ||
+        blocoNoMundo(x, y, z) != VAZIO || !blocoSolido(x, y - 1, z)) return 0;
+    if (!posicaoLivre(jogadorX, (float)y + 1.0f, jogadorZ)) return 1;
+    colocaBloco(tipo, x, y, z);
+    if (!removeDoInventario(tipo, 1)) {
+        colocaBloco(VAZIO, x, y, z);
+        return 1;
+    }
+    jogadorY = (float)y + 1.0f;
+    velocidadeVertical = 0.0f;
+    distanciaQueda = 0.0f;
+    iniciaAnimacaoBraco(2);
+    reconstroiLuzes();
+    return 1;
+}
+
 /* Interação de mineração/construção. O raycast seleciona o primeiro bloco
    visível e os botões do mouse quebram, coletam e colocam itens da hotbar. */
 void interageComBloco(int botao)
@@ -1875,6 +1993,8 @@ void interageComBloco(int botao)
         if (atacaInimigo()) return;
     }
 
+    if (botao == GLUT_RIGHT_BUTTON && colocaBlocoSobJogador()) return;
+
     if (!blocoMirado(&hit)) return;
 
     if (botao == GLUT_LEFT_BUTTON) {
@@ -1884,7 +2004,9 @@ void interageComBloco(int botao)
         if (tiposItens[itemSelecionado] == PICARETA &&
             !gastaDurabilidade(PICARETA))
             return;
-        criaDrop(hit.tipo, hit.x + 0.5f, hit.y + 0.5f, hit.z + 0.5f);
+        criaDrop(hit.tipo == TRONCO_CEREJEIRA ? TRONCO :
+                 (hit.tipo == FOLHA_CEREJEIRA ? FOLHA : hit.tipo),
+                 hit.x + 0.5f, hit.y + 0.5f, hit.z + 0.5f);
         audioQuebraBloco(hit.tipo);
         emiteParticulasBloco(hit.x + 0.5f, hit.y + 0.5f, hit.z + 0.5f, hit.tipo);
         /* Folhas podem soltar maçãs, criando uma fonte renovável simples
@@ -2030,6 +2152,21 @@ void nuvemEm(int x, int z, int largura, int fundo)
     (void)fundo;
 }
 
+static void cerejeiraEm(int x, int z)
+{
+    int chao = alturaDoTerreno(x, z);
+    int y, dx, dz;
+    for (y = 1; y <= 4 && chao + y < ALTURA_MUNDO; y++)
+        colocaBloco(TRONCO_CEREJEIRA, x, chao + y, z);
+    for (y = 4; y <= 6 && chao + y < ALTURA_MUNDO; y++)
+        for (dx = -2; dx <= 2; dx++)
+            for (dz = -2; dz <= 2; dz++)
+                if ((dx != 0 || dz != 0 || y > 4) &&
+                    (y != 6 || (abs(dx) <= 1 && abs(dz) <= 1)) &&
+                    blocoNoMundo(x + dx, chao + y, z + dz) == VAZIO)
+                    colocaBloco(FOLHA_CEREJEIRA, x + dx, chao + y, z + dz);
+}
+
 static void adicionaLuz(float x, float y, float z,
                         float intensidade, float alcance)
 {
@@ -2093,6 +2230,8 @@ void construirMundo(void)
         for (z = 2; z < LADO - 2; z += 5)
             if (biomaProcedural(x, z) == 3 && alturaDoTerreno(x, z) > NIVEL_AGUA)
                 arvoreEm(x, z);
+            else if (biomaProcedural(x, z) == 4 && alturaDoTerreno(x, z) > NIVEL_AGUA)
+                cerejeiraEm(x, z);
 
     /* Cristais luminosos são uma assinatura original do projeto: surgem
        em pequenos campos de tundra e iluminam o terreno à noite. */
@@ -2527,6 +2666,7 @@ void desenhaJogador(void)
     float xPerna = LARGURA_PERNA / 2.0f;                /* centro de cada perna */
     float xBraco = (LARGURA_TRONCO + LARGURA_BRACO) / 2.0f;
     float angulo = BALANCO_MAXIMO * amplitudeCaminhada * sinf(faseCaminhada);
+    int montado = jogadorMontado();
     float gestoBraco = 0.0f;
 
     if (tempoAnimacaoBraco > 0.0f)
@@ -2538,16 +2678,16 @@ void desenhaJogador(void)
     glRotatef(-yaw, 0.0f, 1.0f, 0.0f);                  /* frente do boneco = -z local */
 
     /* pernas (x negativo é a esquerda, x positivo a direita) */
-    membro(-xPerna, quadril,  angulo, LARGURA_PERNA, CALCA, SAPATO, 0.1f);
-    membro( xPerna, quadril, -angulo, LARGURA_PERNA, CALCA, SAPATO, 0.1f);
+    membro(-xPerna, quadril, montado ? 75.0f :  angulo, LARGURA_PERNA, CALCA, SAPATO, 0.1f);
+    membro( xPerna, quadril, montado ? 75.0f : -angulo, LARGURA_PERNA, CALCA, SAPATO, 0.1f);
 
     /* tronco */
     caixa(CAMISA, -LARGURA_TRONCO / 2.0f, quadril, -meiaProf,
           LARGURA_TRONCO, COMPRIMENTO_MEMBRO, PROFUNDIDADE_CORPO);
 
     /* braços: manga curta e mão, em sentido oposto à perna do mesmo lado */
-    membro(-xBraco, ombro, -angulo, LARGURA_BRACO, CAMISA, PELE, 0.45f);
-    membro( xBraco, ombro,  angulo + gestoBraco,
+    membro(-xBraco, ombro, montado ? 30.0f : -angulo, LARGURA_BRACO, CAMISA, PELE, 0.45f);
+    membro( xBraco, ombro, (montado ? 30.0f : angulo) + gestoBraco,
             LARGURA_BRACO, CAMISA, PELE, 0.45f);
     desenhaFerramentaNaMao(angulo + gestoBraco);
 
@@ -2717,6 +2857,9 @@ void teclado(unsigned char tecla, int x, int y)
         case 'g':
             iniciaAnimacaoBraco(1);
             atacaInimigo();
+            break;
+        case 'm':
+            alternaMontaria();
             break;
         case 't':
             alternaChuva();
@@ -3066,16 +3209,21 @@ void atualiza(void)
     /* A movimentação vertical é física: Espaço ou seta para cima inicia
        um salto quando o jogador está apoiado. A seta para baixo e Shift
        deixam de mover o jogador através dos blocos. */
-    if ((teclas[' '] || especiais[GLUT_KEY_UP]) && jogadorNoChao())
-        velocidadeVertical = VELOCIDADE_SALTO;
-
-    velocidadeVertical -= GRAVIDADE * dt;
-    if (velocidadeVertical < -VELOCIDADE_QUEDA)
-        velocidadeVertical = -VELOCIDADE_QUEDA;
-
     int estavaNoChao = jogadorNoChao();
+    int estavaMontado = jogadorMontado();
     float antesX = jogadorX, antesY = jogadorY, antesZ = jogadorZ;
-    moveJogador(mx * passo, velocidadeVertical * dt, mz * passo);
+    if (estavaMontado) {
+        moveMontaria(mx * passo * 1.5f, mz * passo * 1.5f, dt,
+                      teclas[' '] || especiais[GLUT_KEY_UP]);
+        distanciaQueda = 0.0f;
+    } else {
+        if ((teclas[' '] || especiais[GLUT_KEY_UP]) && estavaNoChao)
+            velocidadeVertical = VELOCIDADE_SALTO;
+        velocidadeVertical -= GRAVIDADE * dt;
+        if (velocidadeVertical < -VELOCIDADE_QUEDA)
+            velocidadeVertical = -VELOCIDADE_QUEDA;
+        moveJogador(mx * passo, velocidadeVertical * dt, mz * passo);
+    }
     atualizaChunks(jogadorX, jogadorZ, DISTANCIA_CARGA_CHUNK);
 
     /* Se a colisão bloqueou o deslocamento vertical, zerar a velocidade
@@ -3083,9 +3231,9 @@ void atualiza(void)
     if (jogadorY == antesY)
         velocidadeVertical = 0.0f;
 
-    if (!estavaNoChao && jogadorY < antesY)
+    if (!estavaMontado && !estavaNoChao && jogadorY < antesY)
         distanciaQueda += antesY - jogadorY;
-    if (!estavaNoChao && jogadorNoChao()) {
+    if (!estavaMontado && !estavaNoChao && jogadorNoChao()) {
         if (distanciaQueda > ALTURA_QUEDA_SEGURA) {
             vidaJogador -= (distanciaQueda - ALTURA_QUEDA_SEGURA) * 2.0f;
             audioDano();
@@ -3099,7 +3247,8 @@ void atualiza(void)
        pode ter recusado parte do movimento) */
     float andou = sqrtf((jogadorX - antesX) * (jogadorX - antesX) +
                         (jogadorZ - antesZ) * (jogadorZ - antesZ));
-    audioAtualizaPassos(dt, andou > 0.0001f && estavaNoChao);
+    audioAtualizaPassos(dt, andou > 0.0001f && estavaNoChao &&
+                        !estavaMontado && jogadorNoChao(), blocoApoioJogador());
     {
         int px = (int)floorf(jogadorX);
         int py = (int)floorf(jogadorY + 0.15f);
@@ -3117,6 +3266,8 @@ void atualiza(void)
 
     atualizaDrops(dt);
     atualizaEntidades(dt);
+    atualizaAnimais(dt);
+    audioAtualizaLatidos();
     atualizaEfeitos(dt);
     if (vidaJogador <= 0.0f)
         reapareceJogador();
@@ -4058,6 +4209,7 @@ static void desenhaInstrucoes(void)
         { "Clique esquerdo",    "quebrar bloco" },
         { "Clique direito",     "colocar bloco" },
         { "Espada + clique/G",  "atacar inimigos" },
+        { "M perto do cavalo", "montar / desmontar" },
         { "E",                  "abrir inventario" },
         { "C (inventario)",     "abrir crafting" },
         { "Queda",              "causa dano acima de 3 blocos" },
@@ -4121,6 +4273,7 @@ static void desenhaInformacoes(void)
         case 1: nomeBioma = "Deserto"; break;
         case 2: nomeBioma = "Tundra"; break;
         case 3: nomeBioma = "Floresta"; break;
+        case 4: nomeBioma = "Cerejeiras"; break;
         default: nomeBioma = "Planicie"; break;
     }
 
@@ -4251,6 +4404,21 @@ static void atualizaCorCeu(void)
                  noite[2] + (claro[2] - noite[2]) * t, 1.0f);
 }
 
+static void desenhaNomeSteve(void)
+{
+    const unsigned char nome[] = "Steve";
+    int i;
+    glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT);
+    glDisable(GL_TEXTURE_2D);
+    glColor3f(1.0f, 1.0f, 1.0f);
+    glRasterPos3f(jogadorX, jogadorY + ALTURA_JOGADOR + 0.25f, jogadorZ);
+    glBitmap(0, 0, 0, 0,
+             -(float)glutBitmapLength(GLUT_BITMAP_HELVETICA_18, nome) / 2.0f,
+             0, NULL);
+    for (i = 0; nome[i]; i++) glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, nome[i]);
+    glPopAttrib();
+}
+
 void desenha(void)
 {
     atualizaCorCeu();
@@ -4271,9 +4439,12 @@ void desenha(void)
     desenhaOpacos();
     desenhaDrops();
     desenhaEntidades();
+    desenhaAnimais();
     desenhaEfeitos();
-    if (modoCamera == TERCEIRA_PESSOA)
+    if (modoCamera == TERCEIRA_PESSOA) {
         desenhaJogador();
+        desenhaNomeSteve();
+    }
     desenhaTransparentes();
     desenhaSelecaoBloco();
     iniciaInterface();

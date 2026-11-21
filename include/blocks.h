@@ -26,6 +26,8 @@
 #define PICARETA 22
 #define ESPADA 23
 #define CRISTAL 24
+#define TRONCO_CEREJEIRA 25
+#define FOLHA_CEREJEIRA 26
 
 #define PASSADA_OPACA 0
 #define PASSADA_RECORTE 1

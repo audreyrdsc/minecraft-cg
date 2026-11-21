@@ -2,6 +2,12 @@
 #include "../include/worldgen.h"
 
 unsigned int sementeMundo = 20261119u;
+static int geracaoLegada = 0;
+
+void defineGeracaoLegada(int ativa)
+{
+    geracaoLegada = ativa != 0;
+}
 
 void defineSementeMundo(unsigned int semente)
 {
@@ -37,6 +43,22 @@ static float ruidoTresDimensoes(int x, int y, int z)
 
 int alturaProcedural(int x, int z)
 {
+    if (!geracaoLegada && x >= 16) {
+        /* Um rio continuo, com margens graduais, atravessa a expansao. */
+        float centro = 28.0f + 4.0f * sinf((x - 16) * 0.055f);
+        float distancia = fabsf(z - centro);
+        if (distancia <= 2.5f) return 0;
+        if (distancia <= 3.5f) return 1;
+        if (distancia <= 4.5f) return 2;
+        if (distancia <= 5.5f) return 3;
+        /* Uma planicie identificavel logo depois do rio. */
+        if (x >= 20 && x < 56 && z >= 37 && z < 56) return 3;
+        if (x >= 24 && x < 48 && z >= 2 && z < 15) return 3;
+    }
+    if ((x >= 64 || z >= 64) && ruidoInteiro(x / 12, z / 12) < 0.24f)
+        return 0; /* lagos de varios blocos na regiao nova */
+    if ((x >= 64 || z >= 64) && ruidoInteiro(x / 16 + 19, z / 16 + 23) < 0.58f)
+        return 3; /* planicies amplas para explorar e cavalgar */
     float base = 2.0f + ruidoInteiro(x / 4, z / 4) * 3.0f;
     float detalhe = ruidoInteiro(x, z) * 1.5f;
     int altura = (int)floorf(base + detalhe);
@@ -49,6 +71,12 @@ int alturaProcedural(int x, int z)
 int biomaProcedural(int x, int z)
 {
     float valor = ruidoInteiro(x / 8, z / 8);
+    if (!geracaoLegada) {
+        if (x >= 24 && x < 48 && z >= 2 && z < 15) return 4;
+        if (x >= 20 && x < 56 && z >= 37 && z < 56) return 0;
+    }
+    if ((x >= 64 || z >= 64) && ruidoInteiro(x / 16 + 71, z / 16 + 37) > 0.70f)
+        return 4; /* bosque de cerejeiras */
     if (valor < 0.22f) return 1; /* deserto */
     if (valor > 0.78f) return 2; /* tundra */
     if (ruidoInteiro(x / 3, z / 3) > 0.58f) return 3; /* floresta */

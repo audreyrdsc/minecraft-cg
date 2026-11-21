@@ -8,9 +8,15 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "../include/entities.h"
 #include "../include/inventory.h"
 #include "../include/worldgen.h"
+#include "../include/world.h"
+#include "../include/player.h"
+#include "../include/blocks.h"
+#include "../include/audio.h"
 
 #ifndef MAX_DROPS
 #define MAX_DROPS 128
@@ -96,6 +102,19 @@ static FogoZumbi fogos[MAX_ZUMBIS];
 static float tempoSpawn = 0.0f;
 static int sequenciaSpawn = 0;
 static float tempoAtaqueJogador = 0.0f;
+static unsigned int inimigosProximosDoCachorro = 0;
+
+#define NUM_ANIMAIS 3
+enum { ANIMAL_PORCO, ANIMAL_CACHORRO, ANIMAL_CAVALO };
+typedef struct {
+    int ativo, tipo;
+    float x, y, z, angulo, fase, espera, velocidadeY;
+    unsigned int aleatorio;
+} Animal;
+static Animal animais[NUM_ANIMAIS];
+static int cavaloMontado = 0;
+static int jogadorProximoCavalo = 0;
+static int jogadorProximoPorco = 0;
 
 static GLuint shaderFogo = 0;
 static GLint shaderFogoTempo = -1;
@@ -340,6 +359,275 @@ void iniciaEntidades(void)
     tempoSpawn = 0.0f;
     sequenciaSpawn = 0;
     tempoAtaqueJogador = 0.0f;
+    iniciaAnimais();
+}
+
+static int chaoSeguroAnimal(int x, int z)
+{
+    int y;
+    if (x < 1 || x >= LADO - 1 || z < 1 || z >= LADO - 1) return -1;
+    for (y = ALTURA_MUNDO - 3; y >= 0; y--) {
+        int tipo = mundo[x][y][z];
+        if (tipo == VAZIO) continue;
+        if ((tipo == GRAMA || tipo == TERRA || tipo == AREIA ||
+             tipo == PEDRA || tipo == NEVE) && mundo[x][y + 1][z] == VAZIO &&
+            mundo[x][y + 2][z] == VAZIO) return y + 1;
+        return -1;
+    }
+    return -1;
+}
+
+static int animalLivre(float x, float y, float z, float altura);
+
+void iniciaAnimais(void)
+{
+    int i, raio, dx, dz;
+    inimigosProximosDoCachorro = 0;
+    cavaloMontado = 0;
+    jogadorProximoCavalo = 0;
+    jogadorProximoPorco = 0;
+    memset(animais, 0, sizeof(animais));
+    for (i = 0; i < NUM_ANIMAIS; i++) {
+        Animal *a = &animais[i];
+        a->tipo = i;
+        a->aleatorio = sementeMundo ^ (unsigned int)(0x9e3779b9u * (i + 1));
+        /* No mundo inicial este ponto e plano; em saves modificados nunca
+           enterramos o cavalo em blocos construidos pelo jogador. */
+        if (i == ANIMAL_CAVALO && chaoSeguroAnimal(12, 2) == 3 &&
+            animalLivre(12.0f, 3.0f, 2.5f, 2.3f)) {
+            a->x = 12.0f; a->y = 3.0f; a->z = 2.5f;
+            a->ativo = 1;
+            continue;
+        }
+        for (raio = 3 + i * 2; raio < 20 && !a->ativo; raio++)
+            for (dx = -raio; dx <= raio && !a->ativo; dx++)
+                for (dz = -raio; dz <= raio && !a->ativo; dz++) {
+                    int x = (int)floorf(jogadorX) + dx;
+                    int z = (int)floorf(jogadorZ) + dz;
+                    int chao;
+                    if (abs(dx) != raio && abs(dz) != raio) continue;
+                    chao = chaoSeguroAnimal(x, z);
+                    if (chao < 0 || fabsf((float)chao - jogadorY) > 2.0f) continue;
+                    a->x = x + 0.5f; a->y = (float)chao; a->z = z + 0.5f;
+                    a->ativo = 1;
+                }
+    }
+}
+
+static int animalLivre(float x, float y, float z, float altura)
+{
+    int cx, cy, cz;
+    float raio = altura > 1.6f ? 0.64f : 0.32f;
+    for (cx = (int)floorf(x - raio); cx <= (int)floorf(x + raio); cx++)
+        for (cy = (int)floorf(y + 0.01f); cy <= (int)floorf(y + altura - 0.01f); cy++)
+            for (cz = (int)floorf(z - raio); cz <= (int)floorf(z + raio); cz++)
+                if (blocoSolido(cx, cy, cz)) return 0;
+    return 1;
+}
+
+static int animalAnda(Animal *a, float dx, float dz)
+{
+    float nx = a->x + dx, nz = a->z + dz;
+    int chao = chaoSeguroAnimal((int)floorf(nx), (int)floorf(nz));
+    float altura = a->tipo == ANIMAL_CAVALO ? 2.3f : 1.0f;
+    if (chao < 0 || fabsf(chao - a->y) > 1.01f ||
+        !animalLivre(nx, (float)chao, nz, altura)) return 0;
+    a->x = nx; a->z = nz; a->y = (float)chao;
+    return 1;
+}
+
+static void atualizaProximidadeCavalo(void)
+{
+    Animal *cavalo = &animais[ANIMAL_CAVALO];
+    float dx, dy, dz;
+    int proximo;
+    if (!cavalo->ativo) { jogadorProximoCavalo = 0; return; }
+    /* Ao desmontar dentro do raio, nao confundir a desmontagem com uma
+       nova aproximacao: o jogador deve sair e entrar novamente no raio. */
+    if (cavaloMontado) { jogadorProximoCavalo = 1; return; }
+    dx = jogadorX - cavalo->x;
+    dy = jogadorY - cavalo->y;
+    dz = jogadorZ - cavalo->z;
+    proximo = dx * dx + dy * dy + dz * dz <= 1.0f;
+    if (proximo && !jogadorProximoCavalo) audioCavaloProximo();
+    jogadorProximoCavalo = proximo;
+}
+
+static void atualizaProximidadePorco(void)
+{
+    Animal *porco = &animais[ANIMAL_PORCO];
+    float dx, dy, dz;
+    int proximo;
+    if (!porco->ativo) { jogadorProximoPorco = 0; return; }
+    dx = jogadorX - porco->x;
+    dy = jogadorY - porco->y;
+    dz = jogadorZ - porco->z;
+    proximo = dx * dx + dy * dy + dz * dz <= 4.0f;
+    if (proximo && !jogadorProximoPorco) audioPorcoProximo();
+    jogadorProximoPorco = proximo;
+}
+
+void atualizaAnimais(float dt)
+{
+    int i;
+    for (i = 0; i < NUM_ANIMAIS; i++) {
+        Animal *a = &animais[i];
+        float dx, dz, dist, passo;
+        if (!a->ativo || (i == ANIMAL_CAVALO && cavaloMontado)) continue;
+        if (i == ANIMAL_CACHORRO) {
+            dx = jogadorX - a->x; dz = jogadorZ - a->z;
+            dist = sqrtf(dx * dx + dz * dz);
+            if (dist < 1.8f || dist < 0.001f) continue;
+            a->angulo = atan2f(-dx, -dz) * 180.0f / PI;
+            passo = (dist > 6.0f ? 2.8f : 1.5f) * dt;
+            if (passo > dist - 1.5f) passo = dist - 1.5f;
+            if (animalAnda(a, dx / dist * passo, dz / dist * passo) ||
+                animalAnda(a, dx / dist * passo, 0) || animalAnda(a, 0, dz / dist * passo)) {
+                a->fase += dt * 7.0f;
+                a->espera = 0.0f;
+            } else {
+                int raio, ox, oz;
+                a->espera += dt;
+                /* Recupera o cachorro se ficar preso muito longe do jogador. */
+                if (dist > 8.0f && a->espera > 4.0f) {
+                    for (raio = 2; raio <= 5 && a->espera > 0.0f; raio++)
+                        for (ox = -raio; ox <= raio && a->espera > 0.0f; ox++)
+                            for (oz = -raio; oz <= raio && a->espera > 0.0f; oz++) {
+                                int x = (int)floorf(jogadorX) + ox;
+                                int z = (int)floorf(jogadorZ) + oz;
+                                int y = chaoSeguroAnimal(x, z);
+                                if ((abs(ox) == raio || abs(oz) == raio) && y >= 0 &&
+                                    animalLivre(x + 0.5f, (float)y, z + 0.5f, 1.0f)) {
+                                    a->x = x + 0.5f; a->y = (float)y; a->z = z + 0.5f;
+                                    a->espera = 0.0f;
+                                }
+                            }
+                }
+            }
+        } else {
+            a->espera -= dt;
+            if (a->espera <= 0.0f) {
+                a->aleatorio = a->aleatorio * 1664525u + 1013904223u;
+                a->angulo = (float)(a->aleatorio % 360u);
+                a->espera = 2.0f + (float)((a->aleatorio >> 9) % 40u) / 10.0f;
+            }
+            if (a->espera < 1.0f) continue;
+            dx = -sinf(a->angulo * PI / 180.0f);
+            dz = -cosf(a->angulo * PI / 180.0f);
+            passo = (i == ANIMAL_CAVALO ? 0.9f : 0.7f) * dt;
+            if (animalAnda(a, dx * passo, dz * passo)) a->fase += dt * 6.0f;
+            else a->espera = 0.0f;
+        }
+    }
+    atualizaProximidadeCavalo();
+    atualizaProximidadePorco();
+}
+
+int jogadorMontado(void) { return cavaloMontado; }
+void cancelaMontaria(void) { cavaloMontado = 0; audioAtualizaGalope(0); }
+
+int alternaMontaria(void)
+{
+    Animal *a = &animais[ANIMAL_CAVALO];
+    int i;
+    if (!a->ativo) return 0;
+    if (!cavaloMontado) {
+        float dx = jogadorX - a->x, dz = jogadorZ - a->z;
+        if (dx * dx + dz * dz > 3.0f * 3.0f || fabsf(jogadorY - a->y) > 2.0f ||
+            !posicaoLivre(a->x, a->y + 1.15f, a->z)) return 0;
+        cavaloMontado = 1;
+        jogadorProximoCavalo = 1;
+        jogadorX = a->x; jogadorY = a->y + 1.15f; jogadorZ = a->z;
+        velocidadeVertical = 0.0f;
+        audioMontaria();
+        return 1;
+    }
+    for (i = 0; i < 8; i++) {
+        float angulo = i * PI / 4.0f;
+        float x = a->x + cosf(angulo) * 1.35f;
+        float z = a->z + sinf(angulo) * 1.35f;
+        int y = chaoSeguroAnimal((int)floorf(x), (int)floorf(z));
+        if (y >= 0 && fabsf(y - a->y) <= 1.0f && posicaoLivre(x, (float)y, z)) {
+            jogadorX = x; jogadorY = (float)y; jogadorZ = z;
+            velocidadeVertical = 0.0f;
+            cavaloMontado = 0;
+            audioAtualizaGalope(0);
+            audioMontaria();
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void moveMontaria(float dx, float dz, float dt, int saltar)
+{
+    Animal *a = &animais[ANIMAL_CAVALO];
+    int apoiado;
+    float proximoY;
+    float antesX, antesZ;
+    if (!cavaloMontado || !a->ativo) return;
+    antesX = a->x; antesZ = a->z;
+    a->angulo = -yaw;
+    apoiado = !animalLivre(a->x, a->y - 0.06f, a->z, 2.3f);
+    if (saltar && apoiado) a->velocidadeY = 6.0f;
+    a->velocidadeY -= GRAVIDADE * dt;
+    proximoY = a->y + a->velocidadeY * dt;
+    if (animalLivre(a->x, proximoY, a->z, 2.3f) &&
+        posicaoLivre(a->x, proximoY + 1.15f, a->z)) a->y = proximoY;
+    else a->velocidadeY = 0.0f;
+    if (animalLivre(a->x + dx, a->y, a->z, 2.3f) &&
+        posicaoLivre(a->x + dx, a->y + 1.15f, a->z)) a->x += dx;
+    if (animalLivre(a->x, a->y, a->z + dz, 2.3f) &&
+        posicaoLivre(a->x, a->y + 1.15f, a->z + dz)) a->z += dz;
+    audioAtualizaGalope(fabsf(a->x - antesX) + fabsf(a->z - antesZ) > 0.00001f);
+    if (dx * dx + dz * dz > 0.000001f) {
+        a->fase += dt * 8.0f;
+    }
+    jogadorX = a->x; jogadorY = a->y + 1.15f; jogadorZ = a->z;
+    velocidadeVertical = 0.0f;
+}
+
+int salvaEstadoAnimais(FILE *arquivo)
+{
+    return fwrite(animais, sizeof(animais), 1, arquivo) == 1 &&
+           fwrite(&cavaloMontado, sizeof(cavaloMontado), 1, arquivo) == 1;
+}
+
+int carregaEstadoAnimais(FILE *arquivo)
+{
+    Animal novos[NUM_ANIMAIS];
+    int montado;
+    if (fread(novos, sizeof(novos), 1, arquivo) != 1 ||
+        fread(&montado, sizeof(montado), 1, arquivo) != 1) return 0;
+    memcpy(animais, novos, sizeof(animais));
+    cavaloMontado = montado && animais[ANIMAL_CAVALO].ativo;
+    jogadorProximoCavalo = cavaloMontado ? 1 : 0;
+    jogadorProximoPorco = 0;
+    return 1;
+}
+
+static void preservaPosicao(unsigned char alterado[NUM_CHUNKS_X][NUM_CHUNKS_Z],
+                            float x, float z)
+{
+    int ox, oz;
+    if (!isfinite(x) || !isfinite(z) || x < 0 || x >= LADO || z < 0 || z >= LADO) return;
+    for (ox = -1; ox <= 1; ox++)
+        for (oz = -1; oz <= 1; oz++) {
+            int px = (int)floorf(x + ox), pz = (int)floorf(z + oz);
+            if (px >= 0 && px < LADO && pz >= 0 && pz < LADO)
+                alterado[px / CHUNK_LADO][pz / CHUNK_LADO] = 1;
+        }
+}
+
+void preservaChunksEntidades(unsigned char alterado[NUM_CHUNKS_X][NUM_CHUNKS_Z])
+{
+    int i;
+    for (i = 0; i < NUM_ANIMAIS; i++)
+        if (animais[i].ativo) preservaPosicao(alterado, animais[i].x, animais[i].z);
+    for (i = 0; i < MAX_ZUMBIS; i++)
+        if (zumbis[i].ativo) preservaPosicao(alterado, zumbis[i].x, zumbis[i].z);
+    for (i = 0; i < MAX_DROPS; i++)
+        if (drops[i].ativo) preservaPosicao(alterado, drops[i].x, drops[i].z);
 }
 
 int salvaEstadoEntidades(FILE *arquivo)
@@ -354,11 +642,22 @@ int salvaEstadoEntidades(FILE *arquivo)
 int carregaEstadoEntidades(FILE *arquivo)
 {
     int i;
-    int sucesso = fread(zumbis, sizeof(zumbis), 1, arquivo) == 1 &&
-           fread(&tempoSpawn, sizeof(tempoSpawn), 1, arquivo) == 1 &&
-           fread(&sequenciaSpawn, sizeof(sequenciaSpawn), 1, arquivo) == 1 &&
-           fread(&tempoAtaqueJogador, sizeof(tempoAtaqueJogador), 1, arquivo) == 1 &&
-           fread(drops, sizeof(drops), 1, arquivo) == 1;
+    Zumbi novosZumbis[MAX_ZUMBIS];
+    DropItem novosDrops[MAX_DROPS];
+    float novoTempoSpawn, novoTempoAtaque;
+    int novaSequencia;
+    int sucesso = fread(novosZumbis, sizeof(novosZumbis), 1, arquivo) == 1 &&
+           fread(&novoTempoSpawn, sizeof(novoTempoSpawn), 1, arquivo) == 1 &&
+           fread(&novaSequencia, sizeof(novaSequencia), 1, arquivo) == 1 &&
+           fread(&novoTempoAtaque, sizeof(novoTempoAtaque), 1, arquivo) == 1 &&
+           fread(novosDrops, sizeof(novosDrops), 1, arquivo) == 1;
+    if (!sucesso) return 0;
+    memcpy(zumbis, novosZumbis, sizeof(zumbis));
+    memcpy(drops, novosDrops, sizeof(drops));
+    tempoSpawn = novoTempoSpawn;
+    sequenciaSpawn = novaSequencia;
+    tempoAtaqueJogador = novoTempoAtaque;
+    inimigosProximosDoCachorro = 0;
     for (i = 0; i < MAX_ZUMBIS; i++) {
         fogos[i].ativo = 0;
         fogos[i].restante = 0.0f;
@@ -370,6 +669,37 @@ int carregaEstadoEntidades(FILE *arquivo)
 static int eNoite(void)
 {
     return sinf((tempoMundo - 0.25f) * 2.0f * PI) < 0.0f;
+}
+
+static void atualizaAlertaCachorro(void)
+{
+    unsigned int proximos = 0;
+    int i;
+    if (animais[ANIMAL_CACHORRO].ativo)
+        for (i = 0; i < MAX_ZUMBIS; i++) {
+            float dx, dy, dz;
+            if (!zumbis[i].ativo) continue;
+            dx = zumbis[i].x - jogadorX;
+            dy = zumbis[i].y - jogadorY;
+            dz = zumbis[i].z - jogadorZ;
+            if (dx * dx + dy * dy + dz * dz <= 25.0f) {
+                unsigned int bit = 1u << i;
+                proximos |= bit;
+                if (!(inimigosProximosDoCachorro & bit)) audioAlertaCachorro();
+            }
+        }
+    inimigosProximosDoCachorro = proximos;
+}
+
+static void atualizaSomFogoZumbis(void)
+{
+    int i;
+    for (i = 0; i < MAX_ZUMBIS; i++)
+        if (zumbis[i].ativo && fogos[i].ativo) {
+            audioAtualizaFogoZumbi(1);
+            return;
+        }
+    audioAtualizaFogoZumbi(0);
 }
 
 static void tentaSpawnarZumbi(void)
@@ -476,6 +806,8 @@ void atualizaEntidades(float dt)
     } else {
         tempoSpawn = 0.0f;
     }
+    atualizaAlertaCachorro();
+    atualizaSomFogoZumbis();
 }
 
 int atacaInimigo(void)
@@ -550,6 +882,13 @@ int atacaInimigo(void)
     return 1;
 }
 
+/* Os bracos partem do ombro em direcao ao eixo local -Z. A inclinacao
+   permanece entre 68 e 88 graus: sempre para a frente e abaixo do ombro. */
+static float anguloBracoZumbi(float fase, int lado)
+{
+    return 78.0f + (lado ? -10.0f : 10.0f) * sinf(fase);
+}
+
 void desenhaEntidades(void)
 {
     int i;
@@ -557,7 +896,7 @@ void desenhaEntidades(void)
     for (i = 0; i < MAX_ZUMBIS; i++) {
         Zumbi *zumbi = &zumbis[i];
         int corpo, cabeca;
-        float passoBraco, passoPerna, dxJogador, dzJogador, anguloFrente;
+        float passoPerna, dxJogador, dzJogador, anguloFrente;
         float vidaMaxima;
         if (!zumbi->ativo) continue;
         vidaMaxima = zumbi->tipo ? 8.0f : 12.0f;
@@ -566,7 +905,6 @@ void desenhaEntidades(void)
            azul, com volumes separados para não parecer um bloco único. */
         corpo = CAMISA;
         cabeca = FOLHA;
-        passoBraco = sinf(zumbi->faseCaminhada) * 25.0f;
         passoPerna = sinf(zumbi->faseCaminhada) * 32.0f;
         dxJogador = jogadorX - zumbi->x;
         dzJogador = jogadorZ - zumbi->z;
@@ -592,17 +930,19 @@ void desenhaEntidades(void)
         desenhaBloco(cabeca, 1.0f, TODAS_FACES);
         glPopMatrix();
 
-        /* Braços alternados, com mãos verdes maiores e balanço visível. */
+        /* Pivo no ombro: cubo inicialmente abaixo dele e girado para -Z. */
         glPushMatrix();
-        glTranslatef(-0.43f, 1.34f, -0.15f);
-        glRotatef(passoBraco, 1.0f, 0.0f, 0.0f);
+        glTranslatef(-0.43f, 1.34f, -0.08f);
+        glRotatef(anguloBracoZumbi(zumbi->faseCaminhada, 0), 1.0f, 0.0f, 0.0f);
+        glTranslatef(0.0f, -0.68f, -0.12f);
         glScalef(0.18f, 0.68f, 0.24f);
         desenhaBloco(corpo, 1.0f, TODAS_FACES);
         glPopMatrix();
 
         glPushMatrix();
-        glTranslatef(0.25f, 1.34f, -0.15f);
-        glRotatef(-passoBraco, 1.0f, 0.0f, 0.0f);
+        glTranslatef(0.25f, 1.34f, -0.08f);
+        glRotatef(anguloBracoZumbi(zumbi->faseCaminhada, 1), 1.0f, 0.0f, 0.0f);
+        glTranslatef(0.0f, -0.68f, -0.12f);
         glScalef(0.18f, 0.68f, 0.24f);
         desenhaBloco(cabeca, 1.0f, TODAS_FACES);
         glPopMatrix();
@@ -670,6 +1010,85 @@ void desenhaEntidades(void)
         glEnable(GL_CULL_FACE);
         if (fogos[i].ativo)
             desenhaFogoZumbi(&fogos[i]);
+        glPopMatrix();
+    }
+}
+
+static void caixaAnimal(float x, float y, float z, float largura, float altura,
+                        float profundidade, float r, float g, float b)
+{
+    glColor3f(r, g, b);
+    glPushMatrix();
+    glTranslatef(x, y, z);
+    glScalef(largura, altura, profundidade);
+    glutSolidCube(1.0);
+    glPopMatrix();
+}
+
+void desenhaAnimais(void)
+{
+    int i, perna;
+    for (i = 0; i < NUM_ANIMAIS; i++) {
+        Animal *a = &animais[i];
+        float r, g, b, base, comprimento, largura, alturaPerna;
+        if (!a->ativo) continue;
+        r = i == ANIMAL_PORCO ? 0.94f : (i == ANIMAL_CACHORRO ? 0.72f : 0.78f);
+        g = i == ANIMAL_PORCO ? 0.52f : (i == ANIMAL_CACHORRO ? 0.72f : 0.76f);
+        b = i == ANIMAL_PORCO ? 0.55f : (i == ANIMAL_CACHORRO ? 0.70f : 0.72f);
+        alturaPerna = i == ANIMAL_CAVALO ? 0.82f : 0.38f;
+        base = alturaPerna + (i == ANIMAL_CAVALO ? 0.35f : 0.28f);
+        comprimento = i == ANIMAL_CAVALO ? 1.25f : 0.85f;
+        largura = i == ANIMAL_CAVALO ? 0.65f : 0.58f;
+        glPushMatrix();
+        glTranslatef(a->x, a->y, a->z);
+        glRotatef(a->angulo, 0, 1, 0);
+        glDisable(GL_TEXTURE_2D);
+        caixaAnimal(0, base, 0, largura, i == ANIMAL_CAVALO ? 0.72f : 0.50f,
+                    comprimento, r, g, b);
+        for (perna = 0; perna < 4; perna++) {
+            float lateral = (perna & 1) ? 0.20f : -0.20f;
+            float frente = (perna & 2) ? 0.37f : -0.37f;
+            float balan = sinf(a->fase) * (((perna == 0 || perna == 3) ? 1.0f : -1.0f) * 26.0f);
+            glPushMatrix();
+            glTranslatef(lateral, alturaPerna, frente * (comprimento / 0.85f));
+            glRotatef(balan, 1, 0, 0);
+            caixaAnimal(0, -alturaPerna / 2, 0, 0.20f, alturaPerna, 0.22f, r * 0.9f, g * 0.9f, b * 0.9f);
+            glPopMatrix();
+        }
+        if (i == ANIMAL_CAVALO) {
+            caixaAnimal(0, 1.47f, -0.48f, 0.44f, 0.88f, 0.45f, r, g, b);
+            caixaAnimal(0, 1.85f, -0.74f, 0.48f, 0.42f, 0.62f, r, g, b);
+            caixaAnimal(0, 1.70f, -1.04f, 0.39f, 0.25f, 0.25f, 0.43f, 0.41f, 0.39f);
+            caixaAnimal(-0.11f, 1.69f, -1.17f, 0.07f, 0.06f, 0.02f, 0.18f, 0.17f, 0.16f);
+            caixaAnimal(0.11f, 1.69f, -1.17f, 0.07f, 0.06f, 0.02f, 0.18f, 0.17f, 0.16f);
+            caixaAnimal(-0.15f, 2.14f, -0.65f, 0.12f, 0.24f, 0.13f, r, g, b);
+            caixaAnimal(0.15f, 2.14f, -0.65f, 0.12f, 0.24f, 0.13f, r, g, b);
+            caixaAnimal(0, 1.59f, 0.05f, 0.68f, 0.10f, 0.58f, 0.36f, 0.18f, 0.08f);
+            caixaAnimal(0, 1.89f, -0.37f, 0.16f, 0.60f, 0.20f, 0.30f, 0.28f, 0.27f);
+            caixaAnimal(0, 1.35f, 0.71f, 0.16f, 0.48f, 0.18f, 0.32f, 0.30f, 0.28f);
+            caixaAnimal(-0.25f, 1.90f, -0.88f, 0.04f, 0.09f, 0.09f, 0.02f, 0.02f, 0.02f);
+            caixaAnimal(0.25f, 1.90f, -0.88f, 0.04f, 0.09f, 0.09f, 0.02f, 0.02f, 0.02f);
+        } else {
+            float cabecaY = i == ANIMAL_CACHORRO ? 0.86f : 0.75f;
+            caixaAnimal(0, cabecaY, -0.55f, 0.55f, 0.50f, 0.42f, r, g, b);
+            caixaAnimal(0, cabecaY - 0.08f, -0.79f, 0.30f, 0.20f, 0.18f,
+                        i == ANIMAL_PORCO ? 0.90f : 0.80f, i == ANIMAL_PORCO ? 0.39f : 0.76f,
+                        i == ANIMAL_PORCO ? 0.43f : 0.69f);
+            caixaAnimal(-0.15f, cabecaY + 0.08f, -0.77f, 0.09f, 0.09f, 0.03f, 0.02f, 0.02f, 0.02f);
+            caixaAnimal(0.15f, cabecaY + 0.08f, -0.77f, 0.09f, 0.09f, 0.03f, 0.02f, 0.02f, 0.02f);
+            if (i == ANIMAL_PORCO) {
+                caixaAnimal(-0.075f, cabecaY - 0.07f, -0.89f, 0.06f, 0.07f, 0.02f, 0.45f, 0.13f, 0.17f);
+                caixaAnimal(0.075f, cabecaY - 0.07f, -0.89f, 0.06f, 0.07f, 0.02f, 0.45f, 0.13f, 0.17f);
+            } else {
+                caixaAnimal(0, cabecaY - 0.02f, -0.89f, 0.13f, 0.09f, 0.04f, 0.04f, 0.04f, 0.04f);
+            }
+            caixaAnimal(-0.20f, cabecaY + 0.31f, -0.51f, 0.14f, 0.18f, 0.17f, r * 0.75f, g * 0.75f, b * 0.75f);
+            caixaAnimal(0.20f, cabecaY + 0.31f, -0.51f, 0.14f, 0.18f, 0.17f, r * 0.75f, g * 0.75f, b * 0.75f);
+            if (i == ANIMAL_CACHORRO) {
+                caixaAnimal(0, 0.67f, -0.30f, 0.60f, 0.16f, 0.13f, 0.65f, 0.05f, 0.05f);
+                caixaAnimal(0, 0.70f, 0.55f, 0.13f, 0.15f, 0.40f, r, g, b);
+            }
+        }
         glPopMatrix();
     }
 }

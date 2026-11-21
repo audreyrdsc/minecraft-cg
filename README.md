@@ -8,7 +8,7 @@ O núcleo executável continua em [`mine.c`](mine.c), comentado para ser lido do
 
 ## Estado atual do projeto
 
-Esta é a versão compilada atualmente em `mine.exe`. O jogo inicia às 6h, no
+O código-fonte abaixo deve ser recompilado em `mine.exe` após alterações. O jogo inicia às 6h, no
 nascer do sol (`tempoMundo = 0.25`), chega ao meio-dia às 12h, tem pôr do sol
 às 18h e meia-noite às 0h. O spawn de inimigos e a música noturna ocorrem no
 intervalo das 18h às 6h.
@@ -25,15 +25,38 @@ intervalo das 18h às 6h.
   procedural do céu.
 - A água usa shader GLSL 1.20 com ondulação leve, transparência, reflexos e
   brilho animado.
+- O mundo tem 128 × 128 colunas (quatro vezes a área de 64 × 64), com
+  árvores de maçã, cerejeiras, planícies, lagos, rio sinuoso e vegetação baixa.
+  No mundo novo, procure o bosque próximo de (26, 7), o rio ao redor de
+  z=28–32 e a planície aproximadamente em x=20–55, z=37–55 (coordenadas x, z).
+- Porco e cavalo caminham pelo cenário; o cachorro segue Steve. Perto do
+  cavalo, `M` monta ou desmonta, e os controles de movimento e salto conduzem
+  a montaria. Em mundos novos o cavalo surge em (12, 3, 2.5), se livre.
+  O nome Steve aparece acima do personagem em terceira pessoa.
 - A HUD possui corações, fome e saturação em ícones pixelados, barra de itens,
   vida sobre inimigos e feedback de combate.
 - Os sons ficam em `assets/audio/` no formato WAV: dano do jogador, comer,
   passos, quebra/coleta de blocos, vidro, água, ataque e morte de zumbi,
-  spawn de zumbi, disparo e música noturna em repetição.
+  spawn de zumbi, disparo e música noturna em repetição. O cachorro late duas
+  vezes quando cada inimigo entra a até cinco blocos de Steve; novos alertas
+  aguardam o anterior terminar. Ao se aproximar a dois blocos do porco, Steve
+  ouve o som dele uma vez por aproximação. Ao se aproximar a um bloco do
+  cavalo sem estar montado, Steve ouve outro som uma vez por aproximação.
+  Montar/desmontar toca outro som; montado e em movimento, o galope reproduz
+  os quatro sons em sequência. O
+  som de fogo se repete enquanto houver pelo menos um zumbi queimando.
 - No Windows, a música noturna é reproduzida em um canal próprio e sua
   intensidade diminui suavemente durante os 60 segundos reais anteriores às
   6h. O esmaecimento é aplicado apenas à música, preservando o volume dos
-  efeitos sonoros.
+  efeitos sonoros. Passos na grama usam `walking.wav`; em outras superfícies,
+  o som anterior permanece em `walking-other.wav`. Os efeitos usam buffers
+  independentes, inclusive quando o caminho do projeto é longo, e podem tocar
+  junto com a música.
+
+Limitação conhecida: a câmera em terceira pessoa ainda não verifica colisão
+com o terreno. Perto de paredes ou sob blocos, ela pode entrar no cenário e
+mostrar faces internas ou vazios; mover Steve ou girar a câmera pode contornar
+o problema temporariamente.
 
 ### Compilação atual no Windows
 
@@ -87,17 +110,21 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 
 ## O que tem no cenário
 
-- Um terreno de 64 × 64 colunas de blocos: a área original de 16 × 16 foi preservada e recebeu uma grande extensão procedural.
+- Um terreno de 128 × 128 colunas de blocos: a área original de 16 × 16 foi preservada e recebeu uma grande extensão procedural.
 - Uma montanha irregular com neve no topo.
 - Um gramado com um laguinho.
 - Uma praia e o mar.
 - Uma árvore no formato do Minecraft, com as folhas vazadas.
+- Árvores com maçãs, bosques de cerejeiras rosas e vegetação em planos cruzados.
+- Um porco, um cachorro que segue o jogador e um cavalo montável com `M`.
 - Uma casinha de vidro ao lado de onde o personagem começa.
 - Nuvens procedurais animadas pelo shader do céu, com posições pseudoaleatórias,
   ruído em múltiplas escalas e deslocamento lento.
 - Um personagem no estilo do Minecraft, com braços e pernas que balançam ao andar.
 - Gravidade, salto e colisão vertical com o terreno e o teto.
 - Quebra de blocos com o botão esquerdo e colocação do item selecionado com o botão direito.
+- Com um bloco sólido selecionado, olhe para baixo e clique com o botão direito
+  para colocá-lo sob os pés e subir, desde que haja apoio e espaço acima.
 - Drops físicos simples que caem no mundo e são coletados pelo jogador.
 - Inventário interno de 36 slots, com abertura pela tecla `E`.
 - Movimentação de pilhas no inventário por clique esquerdo e unitária por clique direito.
@@ -110,14 +137,20 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 - Folhas quebradas podem soltar maçãs, criando uma fonte renovável de alimento.
 - Inimigos hostis: zumbi e slime, com perseguição, spawn noturno, desaparecimento
   ao amanhecer, animação simples, dano por proximidade, invulnerabilidade curta,
-  barra de vida e drops. Zumbis naturais comuns pegam fogo durante cerca de dez
-  segundos antes de desaparecer ao amanhecer, enquanto continuam perseguindo
+  barra de vida e drops. Os braços dos zumbis ficam à frente do corpo e balançam
+  alternadamente durante a caminhada. Zumbis naturais comuns pegam fogo durante
+  cerca de dez segundos antes de desaparecer ao amanhecer, enquanto continuam perseguindo
   e atacando o jogador; o fogo usa shader com chamas animadas e ampliadas e não
   é aplicado aos slimes.
-- Extensão procedural com biomas de planície, deserto, tundra e floresta, cavernas simples e minérios de carvão e ferro.
+- Extensão procedural com biomas de planície, deserto, tundra, floresta e cerejeiras, cavernas simples e minérios de carvão e ferro.
 - Picareta e espada no inventário: minérios exigem picareta para serem extraídos; carvão e ferro viram drops coletáveis.
 - Ferramentas possuem durabilidade de 100 usos, não se empilham e desaparecem quando quebram.
-- Salvamento manual com `F6` e carregamento com `F7`, incluindo mundo, seed, posição, inventário, vida, fome, horário, estado da chuva, zumbis e drops; o arquivo possui cabeçalho versionado, gravação temporária e backup de troca.
+- Salvamento manual com `F6` e carregamento com `F7`, incluindo mundo, seed,
+  posição, inventário, vida, fome, horário, chuva, zumbis, drops, animais e
+  montaria. Saves v5 são expandidos e têm backup `.v5.bak`. Em saves v6,
+  regiões idênticas à geração antiga recebem o novo terreno; chunks alterados
+  e a área ocupada pelo jogador são preservados e o original fica em `.v6.bak`.
+  A posição já salva do cavalo não é substituída. Salve com F6 após carregar.
 - A seed pode ser definida ao iniciar com `mine.exe --seed 12345` ou `mine.exe --seed=12345`, permitindo reproduzir o mesmo mundo.
 - Chuva alternável com `T` e partículas visuais ao quebrar blocos.
 - Cristais luminosos coletáveis em campos de tundra, uma mecânica visual original do projeto; depois de minerados, podem ser recolocados como iluminação.
@@ -132,7 +165,7 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 - Informações de FPS e posição do personagem no canto superior, sem alterar o título da janela.
 - Uma tela de instruções acessível pelo menu de pausa, com retorno por ESC, Enter ou Espaço.
 
-Tudo é feito com **um único cubo de lado 1**, desenhado várias vezes em posições diferentes. Os blocos do terreno são texturizados com um atlas pixelado; a água e o vidro são semitransparentes. Cada face combina o brilho direcional do ciclo dia/noite com fontes artificiais próximas, multiplicado pela textura. As nuvens e o personagem continuam com cor sólida.
+Os blocos e membros dos personagens são construídos a partir de cubos. O terreno usa um atlas pixelado; a água e o vidro são semitransparentes, as folhas e a vegetação usam recorte de alfa e o céu usa shader. As texturas das cerejeiras são derivadas do atlas em memória.
 
 ## Conteúdos por aula
 
@@ -239,7 +272,7 @@ versão correta, compile sem nenhuma das quatro macros.
 
 ## Atlas de texturas
 
-Todas as faces vêm de uma única imagem, `atlas.ppm`: 64 × 64 pixels divididos em células de 16 × 16, quatro por linha. Cada célula tem um pouco de ruído pixelado, no estilo do Minecraft.
+As faces texturizadas dos blocos usam `atlas.ppm`: 64 × 64 pixels divididos em células de 16 × 16, quatro por linha. As células de cerejeira são produzidas em memória a partir das texturas existentes; a vegetação baixa tem uma textura própria gerada pelo programa.
 
 Para mudar uma textura, edite a imagem num editor qualquer (por exemplo, salvando como PNG) e converta de volta para PPM binário com o ImageMagick:
 
@@ -256,7 +289,7 @@ O leitor do jogo não aceita linhas de comentário (`#`) no cabeçalho do PPM. A
 | 2 | terra | | 8 | água |
 | 3 | pedra | | 9 | areia |
 | 4 | anéis da madeira | | 10 | neve |
-| 5 | casca | | 11 a 15 | livres |
+| 5 | casca | | 12 e 13 | folhas e casca de cerejeira, geradas em memória |
 
 O formato PPM (`P6`) não tem canal alfa. Na leitura, o jogo transforma o magenta (255, 0, 255) em transparente e dá opacidade parcial às células de vidro (0,4) e de água (0,6).
 
@@ -271,12 +304,13 @@ O formato PPM (`P6`) não tem canal alfa. Na leitura, o jogo transforma o magent
 | Espaço ou ↑ | Saltar | estado |
 | F | Comer a maçã selecionada e recuperar fome | evento |
 | G | Atacar o inimigo à frente | evento |
+| M | Montar ou desmontar perto do cavalo | evento |
 | F6 | Salvar o mundo em `savegame.dat` | evento |
 | F7 | Carregar o mundo salvo | evento |
 | T | Alternar chuva | evento |
 | Mouse | Direção do olhar (já começa capturado) | evento de movimento |
 | Clique esquerdo | Quebrar o bloco observado | evento |
-| Clique direito | Colocar o bloco selecionado | evento |
+| Clique direito | Colocar o bloco; olhando para baixo, construir sob os pés e subir | evento |
 | E | Abrir ou fechar o inventário | evento |
 | C (inventário) | Abrir a tela de crafting | evento |
 | Roda | Selecionar o próximo/anterior item | evento |
@@ -316,7 +350,7 @@ O acesso é `mapa[z][x]`, com a linha antes da coluna. Assim a tabela aparece no
 
 ### Do mapa aos blocos
 
-1. `construirMundo`, chamada uma única vez no início, percorre os 64 × 64 quadrados do mapa e chama `colunaEm(x, z)` para cada um.
+1. `construirMundo`, chamada no início e na migração de saves antigos, percorre os 128 × 128 quadrados do mapa e chama `colunaEm(x, z)` para cada um.
 2. `colunaEm` lê a altura `h` no mapa e empilha blocos de `y = 0` até o topo. Para cada andar, uma sequência de `if` escolhe o tipo comparando `y` com `h`:
    - acima do chão e até o nível da água: **água**
    - coluna baixa: **areia**
@@ -325,15 +359,15 @@ O acesso é `mapa[z][x]`, com a linha antes da coluna. Assim a tabela aparece no
    - dois andares abaixo do topo: **terra**
    - o resto: **pedra**
 3. Cada bloco é gravado com `colocaBloco(tipo, x, y, z)` na matriz `mundo`.
-4. `arvoreEm`, `casinhaEm` e `nuvemEm` usam o mesmo `colocaBloco` para montar a árvore, a casinha de vidro e as nuvens.
+4. As árvores, cerejeiras e casas são montadas com `colocaBloco`; as nuvens são geradas pelo shader do céu.
 5. A cada quadro, a matriz é percorrida e `blocoEm(tipo, x, y, z)` é chamada para cada posição ocupada: ela desloca a origem com `glTranslatef` e desenha ali o cubo de sempre, só com as faces que nenhum vizinho opaco esconde (`facesVisiveis`).
 
 ### Desenho em três passadas
 
 A mistura do vidro e da água usa a cor que já está na tela, então a ordem de desenho importa:
 
-1. **Opacos** (terra, pedra, grama, tronco, areia, neve, nuvens), em `desenhaOpacos`.
-2. **Recorte**: as folhas, com o teste de alfa ligado; os vazados são descartados. Logo depois vem o personagem.
+1. **Opacos** (terra, pedra, grama, tronco, areia e neve), em `desenhaOpacos`.
+2. **Recorte**: folhas e vegetação, com o teste de alfa ligado; os vazados são descartados. Depois vêm os personagens e animais.
 3. **Semitransparentes**: vidro e água, em `desenhaTransparentes`, ordenados do mais distante ao mais próximo da câmera, com a mistura ligada e a escrita de profundidade desligada.
 
 ### A matriz do mundo
@@ -347,7 +381,7 @@ A matriz é o que permite a colisão: a célula que contém um ponto `(px, py, p
 - **Mudar o terreno**: edite os números da matriz `mapa`. Um `0` no meio do gramado vira um lago; um `9` vira uma torre.
 - **Mais ou menos neve**: altere `NIVEL_NEVE`.
 - **Outra árvore**: acrescente `arvoreEm(x, z);` em `construirMundo`, num quadrado de grama.
-- **Outra nuvem**: acrescente `nuvemEm(x, z, largura, fundo);` em `construirMundo`.
+- **Nuvens**: ajuste os parâmetros procedurais no shader do céu em `inicializaShaderCeu`.
 - **Um tipo de bloco novo**: crie um `#define` (por exemplo, `#define MADEIRA 20`; de 10 a 16 são as cores do personagem e 17 é o vidro), desenhe a célula no `atlas.ppm` (há 5 livres) e acrescente o `case` em `celulaDaFace`. Para cor sólida, sem textura, o `case` vai em `corDaFace`.
 - **Quebrar um bloco**: `colocaBloco(VAZIO, x, y, z)` depois de `construirMundo`; o desenho e a colisão passam a ver o buraco.
 

@@ -10,6 +10,7 @@ int blocoSolido(int x, int y, int z);
 int posicaoLivre(float x, float y, float z);
 void moveJogador(float dx, float dy, float dz);
 int jogadorNoChao(void);
+int blocoApoioJogador(void);
 void reapareceJogador(void);
 
 #endif

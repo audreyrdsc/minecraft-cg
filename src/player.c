@@ -2,6 +2,7 @@
 #include "../include/player.h"
 #include "../include/world.h"
 #include "../include/blocks.h"
+#include "../include/entities.h"
 
 #ifndef LARGURA_JOGADOR
 #define LARGURA_JOGADOR 0.6f
@@ -61,8 +62,26 @@ int jogadorNoChao(void)
            !posicaoLivre(jogadorX, jogadorY - 0.06f, jogadorZ);
 }
 
+int blocoApoioJogador(void)
+{
+    const float meia = LARGURA_JOGADOR / 2.0f;
+    int y = (int)floorf(jogadorY - 0.06f);
+    int x = (int)floorf(jogadorX), z = (int)floorf(jogadorZ);
+    int tipo = blocoNoMundo(x, y, z);
+    int cx, cz;
+    if (tipo != VAZIO && tipo != AGUA) return tipo;
+    /* Perto da borda o centro pode estar fora do bloco de apoio. */
+    for (cx = (int)floorf(jogadorX - meia); cx <= (int)floorf(jogadorX + meia - 0.001f); cx++)
+        for (cz = (int)floorf(jogadorZ - meia); cz <= (int)floorf(jogadorZ + meia - 0.001f); cz++) {
+            tipo = blocoNoMundo(cx, y, cz);
+            if (tipo != VAZIO && tipo != AGUA) return tipo;
+        }
+    return VAZIO;
+}
+
 void reapareceJogador(void)
 {
+    cancelaMontaria();
     jogadorX = 8.5f;
     jogadorY = 3.0f;
     jogadorZ = 10.5f;

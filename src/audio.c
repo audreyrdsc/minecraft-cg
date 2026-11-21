@@ -13,7 +13,43 @@ static float tempoProximoPasso = 0.0f;
 static int estavaNaAgua = 0;
 static int musicaNoiteTocando = 0;
 static int musicaNoiteDisponivel = 0;
+static int latidosPendentes = 0;
+static int latidoDisponivel = 0;
+static int latidoTocando = 0;
+static int indiceGalope = -1;
+static int fogoZumbiTocando = 0;
 #ifdef _WIN32
+typedef struct {
+    char alias[32];
+    HWAVEOUT saida;
+    WAVEHDR buffer;
+    unsigned char *dados;
+} EfeitoAudio;
+#define MAX_EFEITOS_AUDIO 24
+static EfeitoAudio efeitosAudio[MAX_EFEITOS_AUDIO];
+static int numeroEfeitosAudio = 0;
+
+static EfeitoAudio *buscaEfeito(const char *alias)
+{
+    int i;
+    for (i = 0; i < numeroEfeitosAudio; i++)
+        if (strcmp(efeitosAudio[i].alias, alias) == 0) return &efeitosAudio[i];
+    return NULL;
+}
+
+static void encerraEfeitosAudio(void)
+{
+    int i;
+    for (i = 0; i < numeroEfeitosAudio; i++) {
+        EfeitoAudio *efeito = &efeitosAudio[i];
+        waveOutReset(efeito->saida);
+        waveOutUnprepareHeader(efeito->saida, &efeito->buffer, sizeof(efeito->buffer));
+        waveOutClose(efeito->saida);
+        free(efeito->dados);
+    }
+    numeroEfeitosAudio = 0;
+}
+
 /* O ganho e aplicado apenas as amostras da musica, nunca ao dispositivo. */
 #define MUSICA_NUM_BUFFERS 4
 #define MUSICA_BUFFER_BYTES 8192
@@ -174,28 +210,58 @@ static void aplicaVolumeMusica(float volume)
 static int abreSom(const char *arquivo, const char *alias)
 {
 #ifdef _WIN32
-    wchar_t executavel[MAX_PATH];
-    wchar_t relativo[MAX_PATH];
-    wchar_t caminho[MAX_PATH];
-    wchar_t comando[768];
-    DWORD lidos = GetModuleFileNameW(NULL, executavel, MAX_PATH);
+    wchar_t caminho[MAX_PATH], relativo[MAX_PATH];
+    DWORD lidos = GetModuleFileNameW(NULL, caminho, MAX_PATH);
     wchar_t *barra;
-    MCIERROR erro;
-
-    if (lidos == 0 || lidos >= MAX_PATH) return 0;
-    executavel[lidos] = L'\0';
-    barra = wcsrchr(executavel, L'\\');
+    HMMIO entrada;
+    MMCKINFO riff = {0}, formato = {0}, dados = {0};
+    WAVEFORMATEX wave = {0};
+    EfeitoAudio *efeito;
+    if (!lidos || lidos >= MAX_PATH || numeroEfeitosAudio >= MAX_EFEITOS_AUDIO) return 0;
+    barra = wcsrchr(caminho, L'\\');
     if (!barra) return 0;
-    *barra = L'\0';
+    *(barra + 1) = L'\0';
     mbstowcs(relativo, arquivo, MAX_PATH - 1);
     relativo[MAX_PATH - 1] = L'\0';
     for (wchar_t *p = relativo; *p; p++)
         if (*p == L'/') *p = L'\\';
-    swprintf(caminho, MAX_PATH, L"%ls\\%ls", executavel, relativo);
-    swprintf(comando, 768, L"open \"%ls\" type waveaudio alias %hs",
-             caminho, alias);
-    erro = mciSendStringW(comando, NULL, 0, NULL);
-    return erro == 0;
+    if (wcslen(caminho) + wcslen(relativo) >= MAX_PATH) return 0;
+    wcscat(caminho, relativo);
+    entrada = mmioOpenW(caminho, NULL, MMIO_READ | MMIO_ALLOCBUF);
+    if (!entrada) return 0;
+    riff.fccType = mmioFOURCC('W', 'A', 'V', 'E');
+    formato.ckid = mmioFOURCC('f', 'm', 't', ' ');
+    dados.ckid = mmioFOURCC('d', 'a', 't', 'a');
+    if (mmioDescend(entrada, &riff, NULL, MMIO_FINDRIFF) != 0 ||
+        mmioDescend(entrada, &formato, &riff, MMIO_FINDCHUNK) != 0 ||
+        formato.cksize < 16 || mmioRead(entrada, (HPSTR)&wave, 16) != 16 ||
+        wave.wFormatTag != WAVE_FORMAT_PCM || wave.wBitsPerSample != 16 ||
+        (wave.nChannels != 1 && wave.nChannels != 2) ||
+        wave.nBlockAlign != wave.nChannels * 2 ||
+        mmioAscend(entrada, &formato, 0) != 0 ||
+        mmioDescend(entrada, &dados, &riff, MMIO_FINDCHUNK) != 0 ||
+        !dados.cksize || dados.cksize > 0x7fffffffUL ||
+        dados.cksize % wave.nBlockAlign != 0) {
+        mmioClose(entrada, 0); return 0;
+    }
+    efeito = &efeitosAudio[numeroEfeitosAudio];
+    memset(efeito, 0, sizeof(*efeito));
+    efeito->dados = (unsigned char *)malloc(dados.cksize);
+    if (!efeito->dados || mmioRead(entrada, (HPSTR)efeito->dados, (LONG)dados.cksize) != (LONG)dados.cksize) {
+        mmioClose(entrada, 0); free(efeito->dados); return 0;
+    }
+    mmioClose(entrada, 0);
+    if (waveOutOpen(&efeito->saida, WAVE_MAPPER, &wave, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) {
+        free(efeito->dados); return 0;
+    }
+    efeito->buffer.lpData = (LPSTR)efeito->dados;
+    efeito->buffer.dwBufferLength = dados.cksize;
+    if (waveOutPrepareHeader(efeito->saida, &efeito->buffer, sizeof(efeito->buffer)) != MMSYSERR_NOERROR) {
+        waveOutClose(efeito->saida); free(efeito->dados); return 0;
+    }
+    snprintf(efeito->alias, sizeof(efeito->alias), "%s", alias);
+    numeroEfeitosAudio++;
+    return 1;
 #else
     (void)arquivo;
     (void)alias;
@@ -206,32 +272,12 @@ static int abreSom(const char *arquivo, const char *alias)
 static void tocaSom(const char *alias)
 {
 #ifdef _WIN32
-    char comando[96];
-    sprintf(comando, "seek %s to start", alias);
-    mciSendStringA(comando, NULL, 0, NULL);
-    sprintf(comando, "play %s from 0", alias);
-    mciSendStringA(comando, NULL, 0, NULL);
+    EfeitoAudio *efeito = buscaEfeito(alias);
+    if (!efeito) return;
+    waveOutReset(efeito->saida);
+    waveOutWrite(efeito->saida, &efeito->buffer, sizeof(efeito->buffer));
 #else
     (void)alias;
-#endif
-}
-
-static void tocaArquivoDireto(const wchar_t *relativo)
-{
-#ifdef _WIN32
-    wchar_t caminho[MAX_PATH];
-    DWORD lidos = GetModuleFileNameW(NULL, caminho, MAX_PATH);
-    wchar_t *barra;
-
-    if (lidos == 0 || lidos >= MAX_PATH) return;
-    barra = wcsrchr(caminho, L'\\');
-    if (!barra) return;
-    *(barra + 1) = L'\0';
-    wcsncat(caminho, relativo,
-            MAX_PATH - wcslen(caminho) - 1);
-    PlaySoundW(caminho, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
-#else
-    (void)relativo;
 #endif
 }
 
@@ -241,17 +287,40 @@ void inicializaAudio(void)
     estavaNaAgua = 0;
     musicaNoiteTocando = 0;
     musicaNoiteDisponivel = 0;
+    latidosPendentes = 0;
+    latidoTocando = 0;
+    latidoDisponivel = 0;
+    indiceGalope = -1;
+    fogoZumbiTocando = 0;
 #ifdef _WIN32
+    encerraEfeitosAudio();
+    atexit(encerraEfeitosAudio);
     abreSom("assets/audio/classic_hurt.wav", "sndHurt");
     abreSom("assets/audio/comer.wav", "sndEat");
     abreSom("assets/audio/bloco.wav", "sndBlockCollect");
     abreSom("assets/audio/damage.wav", "sndDamage");
     abreSom("assets/audio/walking.wav", "sndWalk");
+    if (!abreSom("assets/audio/walking-other.wav", "sndWalkOther"))
+        printf("Erro ao carregar o som de passos nas outras superficies.\n");
     abreSom("assets/audio/glass-break.wav", "sndGlass");
     abreSom("assets/audio/water-splash.wav", "sndWater");
     abreSom("assets/audio/zombie.wav", "sndZombie");
     abreSom("assets/audio/zombie-hit.wav", "sndZombieHit");
     abreSom("assets/audio/zombie-death.wav", "sndZombieDeath");
+    if (!abreSom("assets/audio/horse-armor.wav", "sndHorse"))
+        printf("Erro ao carregar o som da montaria.\n");
+    if (!abreSom("assets/audio/horse-angry.wav", "sndHorseAngry"))
+        printf("Erro ao carregar o som de proximidade do cavalo.\n");
+    if (!abreSom("assets/audio/pig-proximo.wav", "sndPig"))
+        printf("Erro ao carregar o som de proximidade do porco.\n");
+    latidoDisponivel = abreSom("assets/audio/dog-bark-double.wav", "sndDog");
+    if (!latidoDisponivel) printf("Erro ao carregar o latido do cachorro.\n");
+    abreSom("assets/audio/horse-gallop1.wav", "sndGallop1");
+    abreSom("assets/audio/horse-gallop2.wav", "sndGallop2");
+    abreSom("assets/audio/horse-gallop3.wav", "sndGallop3");
+    abreSom("assets/audio/horse-gallop4.wav", "sndGallop4");
+    if (!abreSom("assets/audio/zombie-fire.wav", "sndZombieFire"))
+        printf("Erro ao carregar o som do zumbi queimando.\n");
     musicaNoiteDisponivel = inicializaMusicaNoite();
     if (musicaNoiteDisponivel) {
         printf("Musica noturna carregada.\n");
@@ -266,23 +335,23 @@ void audioQuebra(void) { tocaSom("sndDamage"); }
 void audioQuebraBloco(int tipo)
 {
     if (tipo == VIDRO)
-        tocaArquivoDireto(L"assets\\audio\\glass-break.wav");
+        tocaSom("sndGlass");
     else               tocaSom("sndDamage");
 }
 void audioColeta(void) { tocaSom("sndBlockCollect"); }
 void audioDano(void)
 {
-    tocaArquivoDireto(L"assets\\audio\\classic_hurt.wav");
+    tocaSom("sndHurt");
 }
 void audioAtaque(void) { tocaSom("sndDamage"); }
 void audioZumbiAtingido(void) { tocaSom("sndZombieHit"); }
 void audioZumbiMorreu(void)
 {
-    tocaArquivoDireto(L"assets\\audio\\zombie-death.wav");
+    tocaSom("sndZombieDeath");
 }
 void audioComer(void) { tocaSom("sndEat"); }
 
-void audioAtualizaPassos(float dt, int andando)
+void audioAtualizaPassos(float dt, int andando, int blocoApoio)
 {
     if (!andando) {
         tempoProximoPasso = 0.0f;
@@ -290,15 +359,16 @@ void audioAtualizaPassos(float dt, int andando)
     }
     tempoProximoPasso -= dt;
     if (tempoProximoPasso <= 0.0f) {
-        tocaSom("sndWalk");
-        tempoProximoPasso = 0.38f;
+        tocaSom(blocoApoio == GRAMA ? "sndWalk" : "sndWalkOther");
+        /* O novo passo de grama tem cerca de 0,5 s; nao corta seu final. */
+        tempoProximoPasso = blocoApoio == GRAMA ? 0.50f : 0.38f;
     }
 }
 
 void audioAtualizaAgua(int dentroDaAgua)
 {
     if (dentroDaAgua && !estavaNaAgua)
-        tocaArquivoDireto(L"assets\\audio\\water-splash.wav");
+        tocaSom("sndWater");
     estavaNaAgua = dentroDaAgua ? 1 : 0;
 }
 
@@ -323,3 +393,66 @@ void audioAtualizaNoite(float tempoMundo, float duracaoDia)
 }
 
 void audioSpawnZumbi(void) { tocaSom("sndZombie"); }
+void audioMontaria(void) { tocaSom("sndHorse"); }
+void audioCavaloProximo(void) { tocaSom("sndHorseAngry"); }
+void audioPorcoProximo(void) { tocaSom("sndPig"); }
+
+void audioAtualizaFogoZumbi(int queimando)
+{
+#ifdef _WIN32
+    EfeitoAudio *fogo = buscaEfeito("sndZombieFire");
+    if (!fogo) return;
+    if (!queimando) {
+        if (fogoZumbiTocando) waveOutReset(fogo->saida);
+        fogoZumbiTocando = 0;
+    } else if (!fogoZumbiTocando || (fogo->buffer.dwFlags & WHDR_DONE)) {
+        tocaSom("sndZombieFire");
+        fogoZumbiTocando = 1;
+    }
+#else
+    (void)queimando;
+#endif
+}
+
+void audioAtualizaGalope(int andando)
+{
+#ifdef _WIN32
+    static const char *nomes[] = {"sndGallop1", "sndGallop2", "sndGallop3", "sndGallop4"};
+    EfeitoAudio *atual = indiceGalope >= 0 ? buscaEfeito(nomes[indiceGalope]) : NULL;
+    if (!andando) {
+        if (atual) waveOutReset(atual->saida);
+        indiceGalope = -1;
+        return;
+    }
+    if (!atual || (atual->buffer.dwFlags & WHDR_DONE)) {
+        indiceGalope = (indiceGalope + 1) % 4;
+        tocaSom(nomes[indiceGalope]);
+    }
+#else
+    (void)andando;
+#endif
+}
+
+/* Cada arquivo contem dois latidos consecutivos. Alertas simultaneos entram
+   numa fila para que o proximo inimigo nao interrompa a dupla anterior. */
+void audioAlertaCachorro(void)
+{
+    if (latidoDisponivel && latidosPendentes < 32) latidosPendentes++;
+    audioAtualizaLatidos();
+}
+
+void audioAtualizaLatidos(void)
+{
+#ifdef _WIN32
+    if (latidoTocando) {
+        EfeitoAudio *latido = buscaEfeito("sndDog");
+        if (!latido || (latido->buffer.dwFlags & WHDR_DONE))
+            latidoTocando = 0;
+    }
+    if (!latidoTocando && latidosPendentes > 0) {
+        latidosPendentes--;
+        tocaSom("sndDog");
+        latidoTocando = 1;
+    }
+#endif
+}

@@ -8,7 +8,7 @@ int main(void)
 {
     int alturaA, biomaA, cavernaA, minerioA;
     int alturaB, biomaB, cavernaB, minerioB;
-    int diferentes = 0;
+    int diferentes = 0, lagos = 0, cerejeiras = 0;
     int x, z;
 
     defineSementeMundo(12345u);
@@ -31,6 +31,21 @@ int main(void)
             if (alturaProcedural(x * 3, z * 3) != alturaA)
                 diferentes++;
     assert(diferentes > 0);
+    for (x = 64; x < LADO; x++)
+        for (z = 0; z < LADO; z++) {
+            if (alturaProcedural(x, z) == 0) lagos++;
+            if (biomaProcedural(x, z) == 4) cerejeiras++;
+        }
+    assert(lagos > 0 && cerejeiras > 0);
+    assert(LADO == 128 && NUM_CHUNKS_X == 8 && NUM_CHUNKS_Z == 8);
+    assert(biomaProcedural(26, 7) == 4);
+    assert(biomaProcedural(30, 42) == 0 && alturaProcedural(30, 42) == 3);
+    /* Uma secao de agua a cada coluna demonstra continuidade do rio. */
+    for (x = 16; x < LADO; x++) {
+        int agua = 0;
+        for (z = 22; z <= 35; z++) if (alturaProcedural(x, z) == 0) agua++;
+        assert(agua >= 5);
+    }
 
     inicializaChunks();
     assert(obtemChunk(0, 0) != 0);
@@ -50,7 +65,8 @@ int main(void)
     assert(!chunkEstaSujo(0, 0));
     assert(obtemFacesCache(-1, 0, 0) == 0);
     assert(dentroDoMundo(63, ALTURA_MUNDO - 1, 63));
-    assert(!dentroDoMundo(64, 0, 0));
+    assert(dentroDoMundo(127, ALTURA_MUNDO - 1, 127));
+    assert(!dentroDoMundo(128, 0, 0));
 
     puts("worldgen_chunks_test: OK");
     return 0;

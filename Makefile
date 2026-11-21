@@ -2,7 +2,7 @@ CC ?= gcc
 
 COMMON_SOURCE = mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c
 UNIX_LIBS = -lGLEW -lGL -lGLU -lglut -lm
-WINDOWS_LIBS = -lglew32 -lfreeglut -lopengl32 -lglu32
+WINDOWS_LIBS = -lglew32 -lfreeglut -lopengl32 -lglu32 -lwinmm
 
 .PHONY: all clean demos syntax test test-worldgen test-inventory test-crafting
 

@@ -7,7 +7,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 if(WIN32)
     set(MINE_SOURCES mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c mine.rc)
-    set(MINE_LIBRARIES glew32 freeglut opengl32 glu32)
+    set(MINE_LIBRARIES glew32 freeglut opengl32 glu32 winmm)
 elseif(APPLE)
     set(MINE_SOURCES mine.c src/inventory.c src/crafting.c src/entities.c src/world.c src/chunks.c src/worldgen.c src/save.c src/effects.c src/audio.c src/player.c)
     find_package(OpenGL REQUIRED)
