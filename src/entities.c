@@ -85,10 +85,147 @@ typedef struct {
     int natural;
 } Zumbi;
 
+typedef struct {
+    int ativo;
+    float restante;
+    float fase;
+} FogoZumbi;
+
 static Zumbi zumbis[MAX_ZUMBIS];
+static FogoZumbi fogos[MAX_ZUMBIS];
 static float tempoSpawn = 0.0f;
 static int sequenciaSpawn = 0;
 static float tempoAtaqueJogador = 0.0f;
+
+static GLuint shaderFogo = 0;
+static GLint shaderFogoTempo = -1;
+static GLint shaderFogoFase = -1;
+
+static GLuint compilaShaderFogo(GLenum tipo, const char *fonte)
+{
+    GLuint shader = glCreateShader(tipo);
+    GLint compilou = GL_FALSE;
+
+    if (!shader) return 0;
+    glShaderSource(shader, 1, &fonte, NULL);
+    glCompileShader(shader);
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compilou);
+    if (!compilou) {
+        char log[1024];
+        GLsizei tamanho = 0;
+        glGetShaderInfoLog(shader, sizeof(log), &tamanho, log);
+        log[(size_t)(tamanho < (GLsizei)sizeof(log) ? tamanho :
+             (GLsizei)sizeof(log) - 1)] = '\0';
+        printf("Shader do fogo: %s\n", log);
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+static void inicializaShaderFogo(void)
+{
+    static const char *vertexShader =
+        "#version 120\n"
+        "uniform float u_tempo;\n"
+        "uniform float u_fase;\n"
+        "varying vec2 v_uv;\n"
+        "void main() {\n"
+        "  vec4 p = gl_Vertex;\n"
+        "  float pulso = sin(u_tempo * 7.0 + u_fase + p.y * 8.0);\n"
+        "  p.x += pulso * 0.035 * (p.y + 0.2);\n"
+        "  p.z += cos(u_tempo * 5.0 + u_fase * 1.7 + p.y * 6.0) * 0.025 * (p.y + 0.2);\n"
+        "  gl_Position = gl_ModelViewProjectionMatrix * p;\n"
+        "  v_uv = gl_MultiTexCoord0.st;\n"
+        "}\n";
+    static const char *fragmentShader =
+        "#version 120\n"
+        "uniform float u_tempo;\n"
+        "uniform float u_fase;\n"
+        "varying vec2 v_uv;\n"
+        "void main() {\n"
+        "  vec2 uv = v_uv;\n"
+        "  float deslocamento = sin(u_tempo * 8.0 + u_fase + uv.y * 12.0) * 0.08;\n"
+        "  float largura = 0.30 + 0.12 * sin(u_tempo * 6.0 + u_fase * 2.0);\n"
+        "  float chama = 1.0 - smoothstep(0.0, largura, abs(uv.x - 0.5 + deslocamento * (1.0 - uv.y)));\n"
+        "  chama *= smoothstep(0.02, 0.16, uv.y);\n"
+        "  chama *= 1.0 - smoothstep(0.72, 1.0, uv.y);\n"
+        "  float detalhe = 0.5 + 0.5 * sin(uv.x * 24.0 + uv.y * 18.0 + u_tempo * 10.0 + u_fase);\n"
+        "  chama *= 0.72 + detalhe * 0.28;\n"
+        "  if (chama < 0.08) discard;\n"
+        "  vec3 base = mix(vec3(1.0, 0.08, 0.01), vec3(1.0, 0.58, 0.02), smoothstep(0.10, 0.58, uv.y));\n"
+        "  base = mix(base, vec3(1.0, 0.96, 0.42), smoothstep(0.48, 0.88, uv.y));\n"
+        "  gl_FragColor = vec4(base, chama * 0.86);\n"
+        "}\n";
+    GLuint vs, fs, programa;
+    GLint ligado = GL_FALSE;
+
+    if (shaderFogo || !glCreateShader) return;
+    vs = compilaShaderFogo(GL_VERTEX_SHADER, vertexShader);
+    fs = compilaShaderFogo(GL_FRAGMENT_SHADER, fragmentShader);
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return;
+    }
+    programa = glCreateProgram();
+    glAttachShader(programa, vs);
+    glAttachShader(programa, fs);
+    glLinkProgram(programa);
+    glGetProgramiv(programa, GL_LINK_STATUS, &ligado);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ligado) {
+        char log[1024];
+        GLsizei tamanho = 0;
+        glGetProgramInfoLog(programa, sizeof(log), &tamanho, log);
+        log[(size_t)(tamanho < (GLsizei)sizeof(log) ? tamanho :
+             (GLsizei)sizeof(log) - 1)] = '\0';
+        printf("Programa do fogo: %s\n", log);
+        glDeleteProgram(programa);
+        return;
+    }
+    shaderFogo = programa;
+    shaderFogoTempo = glGetUniformLocation(shaderFogo, "u_tempo");
+    shaderFogoFase = glGetUniformLocation(shaderFogo, "u_fase");
+    printf("Shader do fogo ativo.\n");
+}
+
+static void desenhaQuadFogo(float deslocamento, float giro)
+{
+    glPushMatrix();
+    glRotatef(giro, 0.0f, 1.0f, 0.0f);
+    glTranslatef(deslocamento, 1.24f, 0.0f);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0.0f, 0.0f); glVertex3f(-0.84f, -1.24f, 0.0f);
+    glTexCoord2f(1.0f, 0.0f); glVertex3f( 0.84f, -1.24f, 0.0f);
+    glTexCoord2f(1.0f, 1.0f); glVertex3f( 0.50f,  1.56f, 0.0f);
+    glTexCoord2f(0.0f, 1.0f); glVertex3f(-0.50f,  1.56f, 0.0f);
+    glEnd();
+    glPopMatrix();
+}
+
+static void desenhaFogoZumbi(const FogoZumbi *fogo)
+{
+    if (!shaderFogo || !fogo->ativo) return;
+    glUseProgram(shaderFogo);
+    glUniform1f(shaderFogoTempo, fogo->fase);
+    glUniform1f(shaderFogoFase, fogo->fase * 1.37f);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+    desenhaQuadFogo(-0.10f, 0.0f);
+    desenhaQuadFogo( 0.08f, 90.0f);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+    glUseProgram(0);
+}
 
 static DropItem drops[MAX_DROPS];
 
@@ -182,6 +319,12 @@ void iniciaEntidades(void)
 {
     int i;
     for (i = 0; i < MAX_ZUMBIS; i++) zumbis[i].ativo = 0;
+    for (i = 0; i < MAX_ZUMBIS; i++) {
+        fogos[i].ativo = 0;
+        fogos[i].restante = 0.0f;
+        fogos[i].fase = 0.0f;
+    }
+    inicializaShaderFogo();
 
     /* Nenhum inimigo começa ativo: zumbis só são criados por spawn noturno. */
     zumbis[0].ativo = 0;
@@ -210,16 +353,23 @@ int salvaEstadoEntidades(FILE *arquivo)
 
 int carregaEstadoEntidades(FILE *arquivo)
 {
-    return fread(zumbis, sizeof(zumbis), 1, arquivo) == 1 &&
+    int i;
+    int sucesso = fread(zumbis, sizeof(zumbis), 1, arquivo) == 1 &&
            fread(&tempoSpawn, sizeof(tempoSpawn), 1, arquivo) == 1 &&
            fread(&sequenciaSpawn, sizeof(sequenciaSpawn), 1, arquivo) == 1 &&
            fread(&tempoAtaqueJogador, sizeof(tempoAtaqueJogador), 1, arquivo) == 1 &&
            fread(drops, sizeof(drops), 1, arquivo) == 1;
+    for (i = 0; i < MAX_ZUMBIS; i++) {
+        fogos[i].ativo = 0;
+        fogos[i].restante = 0.0f;
+        fogos[i].fase = 0.0f;
+    }
+    return sucesso;
 }
 
 static int eNoite(void)
 {
-    return sinf(tempoMundo * 2.0f * PI) < 0.0f;
+    return sinf((tempoMundo - 0.25f) * 2.0f * PI) < 0.0f;
 }
 
 static void tentaSpawnarZumbi(void)
@@ -253,6 +403,9 @@ static void tentaSpawnarZumbi(void)
     zumbis[slot].tempoDano = 0.0f;
     zumbis[slot].faseCaminhada = 0.0f;
     zumbis[slot].natural = 1;
+    fogos[slot].ativo = 0;
+    fogos[slot].restante = 0.0f;
+    fogos[slot].fase = 0.0f;
     audioSpawnZumbi();
 }
 
@@ -268,8 +421,26 @@ void atualizaEntidades(float dt)
 
         if (!zumbi->ativo) continue;
         if (zumbi->natural && !eNoite()) {
-            zumbi->ativo = 0;
-            continue;
+            if (zumbi->tipo == 0 && !fogos[i].ativo) {
+                fogos[i].ativo = 1;
+                fogos[i].restante = 10.0f;
+                fogos[i].fase = 0.0f;
+            }
+            if (fogos[i].ativo) {
+                fogos[i].restante -= dt;
+                fogos[i].fase += dt;
+                if (fogos[i].restante <= 0.0f) {
+                    fogos[i].ativo = 0;
+                    zumbi->ativo = 0;
+                    continue;
+                }
+            } else {
+                zumbi->ativo = 0;
+                continue;
+            }
+        } else if (fogos[i].ativo) {
+            fogos[i].ativo = 0;
+            fogos[i].restante = 0.0f;
         }
         if (zumbi->tempoAtaque > 0.0f) zumbi->tempoAtaque -= dt;
         if (zumbi->tempoDano > 0.0f) zumbi->tempoDano -= dt;
@@ -371,6 +542,7 @@ int atacaInimigo(void)
     zumbis[melhor].tempoDano = 0.35f;
     if (zumbis[melhor].vida <= 0.0f) {
         audioZumbiMorreu();
+        fogos[melhor].ativo = 0;
         zumbis[melhor].ativo = 0;
         criaDrop(zumbis[melhor].tipo ? CRISTAL : MACA,
                  zumbis[melhor].x, zumbis[melhor].y + 0.8f, zumbis[melhor].z);
@@ -496,6 +668,8 @@ void desenhaEntidades(void)
         glEnd();
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
+        if (fogos[i].ativo)
+            desenhaFogoZumbi(&fogos[i]);
         glPopMatrix();
     }
 }

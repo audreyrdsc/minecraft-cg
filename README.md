@@ -8,15 +8,19 @@ O núcleo executável continua em [`mine.c`](mine.c), comentado para ser lido do
 
 ## Estado atual do projeto
 
-Esta é a versão compilada atualmente em `mine.exe`. O jogo inicia de dia
-(`tempoMundo = 0.25`) e possui um ciclo contínuo de iluminação, com spawn de
-inimigos restrito à noite e música noturna independente dos efeitos sonoros.
+Esta é a versão compilada atualmente em `mine.exe`. O jogo inicia às 6h, no
+nascer do sol (`tempoMundo = 0.25`), chega ao meio-dia às 12h, tem pôr do sol
+às 18h e meia-noite às 0h. O spawn de inimigos e a música noturna ocorrem no
+intervalo das 18h às 6h.
 
 - O céu usa shader GLSL 1.20 em um domo 3D centrado na câmera, com transição
   suave de cores, brilho de horizonte, sol e lua com halo, estrelas com
-  cintilação, nuvens procedurais em movimento e uma passagem eventual de
-  cometa à noite. Os elementos acompanham a orientação vertical do olhar e
-  não ficam presos ao horizonte da tela.
+  cintilação, nuvens procedurais em múltiplas formações pseudoaleatórias e uma
+  passagem eventual de cometa à noite. As nuvens têm escalas e velocidades
+  diferentes, e os astros desaparecem suavemente antes de cruzar o horizonte.
+  Os elementos acompanham a orientação vertical do olhar e não ficam presos à
+  tela. Nuvens e estrelas usam tempo contínuo, e estrelas cadentes e cometas
+  têm trajetórias e intervalos distintos durante a noite.
 - As nuvens estáticas de blocos foram desativadas para não duplicar a camada
   procedural do céu.
 - A água usa shader GLSL 1.20 com ondulação leve, transparência, reflexos e
@@ -26,6 +30,10 @@ inimigos restrito à noite e música noturna independente dos efeitos sonoros.
 - Os sons ficam em `assets/audio/` no formato WAV: dano do jogador, comer,
   passos, quebra/coleta de blocos, vidro, água, ataque e morte de zumbi,
   spawn de zumbi, disparo e música noturna em repetição.
+- No Windows, a música noturna é reproduzida em um canal próprio e sua
+  intensidade diminui suavemente durante os 60 segundos reais anteriores às
+  6h. O esmaecimento é aplicado apenas à música, preservando o volume dos
+  efeitos sonoros.
 
 ### Compilação atual no Windows
 
@@ -85,7 +93,8 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 - Uma praia e o mar.
 - Uma árvore no formato do Minecraft, com as folhas vazadas.
 - Uma casinha de vidro ao lado de onde o personagem começa.
-- Nuvens procedurais animadas pelo shader do céu, com ruído em múltiplas escalas.
+- Nuvens procedurais animadas pelo shader do céu, com posições pseudoaleatórias,
+  ruído em múltiplas escalas e deslocamento lento.
 - Um personagem no estilo do Minecraft, com braços e pernas que balançam ao andar.
 - Gravidade, salto e colisão vertical com o terreno e o teto.
 - Quebra de blocos com o botão esquerdo e colocação do item selecionado com o botão direito.
@@ -99,7 +108,12 @@ As funções centrais têm um comentário antes delas explicando o que fazem e p
 - A corrida é bloqueada quando a fome está em nível crítico.
 - Maçãs na hotbar: selecione o item e pressione `F` para comer.
 - Folhas quebradas podem soltar maçãs, criando uma fonte renovável de alimento.
-- Inimigos hostis: zumbi e slime, com perseguição, spawn noturno, desaparecimento ao amanhecer, animação simples, dano por proximidade, invulnerabilidade curta, barra de vida e drops.
+- Inimigos hostis: zumbi e slime, com perseguição, spawn noturno, desaparecimento
+  ao amanhecer, animação simples, dano por proximidade, invulnerabilidade curta,
+  barra de vida e drops. Zumbis naturais comuns pegam fogo durante cerca de dez
+  segundos antes de desaparecer ao amanhecer, enquanto continuam perseguindo
+  e atacando o jogador; o fogo usa shader com chamas animadas e ampliadas e não
+  é aplicado aos slimes.
 - Extensão procedural com biomas de planície, deserto, tundra e floresta, cavernas simples e minérios de carvão e ferro.
 - Picareta e espada no inventário: minérios exigem picareta para serem extraídos; carvão e ferro viram drops coletáveis.
 - Ferramentas possuem durabilidade de 100 usos, não se empilham e desaparecem quando quebram.

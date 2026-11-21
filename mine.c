@@ -592,6 +592,9 @@ static GLint shaderAguaBloco = -1;
 
 static GLuint shaderCeu = 0;
 static GLint shaderCeuTempo = -1;
+static GLint shaderCeuSeed = -1;
+static GLint shaderCeuAnimacao = -1;
+static float tempoAnimacaoCeu = 0.0f;
 static GLUquadric *ceuDomo = NULL;
 
 static GLuint compilaShaderAgua(GLenum tipo, const char *fonte)
@@ -717,10 +720,12 @@ static void inicializaShaderCeu(void)
     static const char *fragmentShader =
         "#version 120\n"
         "uniform float u_tempo;\n"
+        "uniform float u_seed;\n"
+        "uniform float u_animacao;\n"
         "varying vec3 v_direcao;\n"
         "const float PI = 3.14159265;\n"
         "float hash(vec2 p) {\n"
-        "  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n"
+        "  return fract(sin(dot(p + vec2(u_seed * 0.013, u_seed * 0.021), vec2(127.1, 311.7))) * 43758.5453);\n"
         "}\n"
         "float ruido(vec2 p) {\n"
         "  vec2 i = floor(p);\n"
@@ -743,7 +748,7 @@ static void inicializaShaderCeu(void)
         "}\n"
         "void main() {\n"
         "  vec3 dir = normalize(v_direcao);\n"
-        "  float solAltura = sin(u_tempo * 2.0 * PI);\n"
+        "  float solAltura = sin((u_tempo - 0.25) * 2.0 * PI);\n"
         "  float dia = smoothstep(-0.14, 0.16, solAltura);\n"
         "  float noite = 1.0 - dia;\n"
         "  float horizonte = smoothstep(-0.12, 0.78, dir.y);\n"
@@ -754,7 +759,7 @@ static void inicializaShaderCeu(void)
         "  vec3 corDia = mix(diaHorizonte, diaAlto, horizonte);\n"
         "  vec3 corNoite = mix(noiteHorizonte, noiteAlto, horizonte);\n"
         "  vec3 cor = mix(corNoite, corDia, dia);\n"
-        "  float angulo = u_tempo * 2.0 * PI;\n"
+        "  float angulo = (u_tempo - 0.25) * 2.0 * PI;\n"
         "  vec3 solDir = normalize(vec3(cos(angulo), 0.78 * sin(angulo), 0.18));\n"
         "  vec3 luaDir = -solDir;\n"
         "  float distSol = 1.0 - dot(dir, solDir);\n"
@@ -763,38 +768,64 @@ static void inicializaShaderCeu(void)
         "  float discoSol = 1.0 - smoothstep(0.00012, 0.00065, distSol);\n"
         "  float haloLua = 1.0 - smoothstep(0.0003, 0.040, distLua);\n"
         "  float discoLua = 1.0 - smoothstep(0.00010, 0.00050, distLua);\n"
-        "  cor += vec3(1.0, 0.48, 0.08) * haloSol * dia * 0.20;\n"
-        "  cor += vec3(1.0, 0.85, 0.38) * discoSol * dia;\n"
-        "  cor += vec3(0.28, 0.40, 0.75) * haloLua * noite * 0.18;\n"
-        "  cor += vec3(0.78, 0.86, 1.0) * discoLua * noite * 0.90;\n"
-        "  vec2 estrelaUv = vec2(atan(dir.z, dir.x) / (2.0 * PI) + 0.5, dir.y * 0.5 + 0.5) * 105.0;\n"
+        "  float solVisivel = dia * smoothstep(-0.18, 0.10, solDir.y);\n"
+        "  float luaVisivel = noite * smoothstep(-0.18, 0.10, luaDir.y);\n"
+        "  cor += vec3(1.0, 0.48, 0.08) * haloSol * solVisivel * 0.20;\n"
+        "  cor += vec3(1.0, 0.85, 0.38) * discoSol * solVisivel;\n"
+        "  cor += vec3(0.28, 0.40, 0.75) * haloLua * luaVisivel * 0.18;\n"
+        "  cor += vec3(0.78, 0.86, 1.0) * discoLua * luaVisivel * 0.90;\n"
+        "  vec2 estrelaUv = vec2(atan(dir.z, dir.x) / (2.0 * PI) + 0.5, dir.y * 0.5 + 0.5) * 64.0;\n"
         "  vec2 celulaEstrela = floor(estrelaUv);\n"
         "  vec2 localEstrela = fract(estrelaUv) - 0.5;\n"
         "  float sorteEstrela = hash(celulaEstrela);\n"
-        "  float estrela = step(0.982, sorteEstrela) * smoothstep(0.16, 0.0, length(localEstrela));\n"
-        "  float cintilacao = 0.72 + 0.28 * sin(u_tempo * 240.0 + sorteEstrela * 35.0);\n"
+        "  float estrela = step(0.91, sorteEstrela) * (1.0 - smoothstep(0.03, 0.13, length(localEstrela)));\n"
+        "  float cintilacao = 0.60 + 0.40 * sin(u_animacao * 2.0 + sorteEstrela * 35.0);\n"
         "  cor += vec3(0.72, 0.86, 1.0) * estrela * cintilacao * noite * 0.95;\n"
-        "  vec2 nuvemUv = vec2(atan(dir.z, dir.x) / (2.0 * PI) * 1.35 + u_tempo * 0.055, dir.y * 2.2 + 1.3);\n"
-        "  float camadaNuvem = fbm(nuvemUv * 2.1);\n"
-        "  camadaNuvem = smoothstep(0.57, 0.72, camadaNuvem);\n"
-        "  float faixaNuvem = smoothstep(0.12, 0.42, dir.y) * (1.0 - smoothstep(0.78, 0.98, dir.y));\n"
-        "  float alfaNuvem = camadaNuvem * faixaNuvem * dia * 0.22;\n"
+        "  float longitude = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;\n"
+        "  float latitude = dir.y * 0.5 + 0.5;\n"
+        "  float nuvens = 0.0;\n"
+        "  for (int i = 0; i < 8; i++) {\n"
+        "    float fi = float(i);\n"
+        "    float velocidade = 0.0005 + hash(vec2(fi + 11.0, 41.0)) * 0.0006;\n"
+        "    float centroX = fract(hash(vec2(fi + 4.0, 18.0)) + u_animacao * velocidade);\n"
+        "    float centroY = 0.58 + hash(vec2(fi + 22.0, 7.0)) * 0.25;\n"
+        "    float escala = 5.0 + hash(vec2(fi + 31.0, 3.0)) * 4.0;\n"
+        "    float dx = fract(longitude - centroX + 0.5) - 0.5;\n"
+        "    float dy = latitude - centroY;\n"
+        "    vec2 uvNuvem = vec2(dx * escala, dy * escala * 2.0);\n"
+        "    float forma = fbm(uvNuvem + vec2(fi * 9.3, fi * 3.7));\n"
+        "    float bordaNuvem = 1.0 - smoothstep(0.34, 0.58, length(vec2(dx * 2.3, dy * 3.0)));\n"
+        "    nuvens = max(nuvens, smoothstep(0.30, 0.53, forma) * bordaNuvem);\n"
+        "  }\n"
+        "  float faixaNuvem = smoothstep(0.10, 0.38, dir.y) * (1.0 - smoothstep(0.78, 0.96, dir.y));\n"
+        "  float alfaNuvem = nuvens * faixaNuvem * mix(0.14, 0.80, dia);\n"
         "  cor = mix(cor, vec3(0.92, 0.96, 1.0), alfaNuvem);\n"
-        "  float tCometa = mod(u_tempo * 240.0, 53.0);\n"
-        "  float ativoCometa = smoothstep(40.0, 40.5, tCometa);\n"
-        "  ativoCometa *= 1.0 - smoothstep(42.5, 43.0, tCometa);\n"
-        "  float progresso = clamp((tCometa - 40.0) / 3.0, 0.0, 1.0);\n"
-        "  vec3 inicioCometa = normalize(vec3(-0.72, 0.68, 0.20));\n"
-        "  vec3 fimCometa = normalize(vec3(0.62, 0.28, 0.20));\n"
+        "  float tCometa = mod(u_animacao, 30.0);\n"
+        "  float ativoCometa = smoothstep(22.0, 22.5, tCometa);\n"
+        "  ativoCometa *= 1.0 - smoothstep(26.0, 26.5, tCometa);\n"
+        "  float progresso = clamp((tCometa - 22.0) / 4.0, 0.0, 1.0);\n"
+        "  vec3 inicioCometa = normalize(vec3(-0.72, 0.68, -0.75));\n"
+        "  vec3 fimCometa = normalize(vec3(0.62, 0.28, -0.75));\n"
         "  vec3 posCometa = normalize(mix(inicioCometa, fimCometa, progresso));\n"
         "  vec3 direcaoCometa = normalize(fimCometa - inicioCometa);\n"
         "  vec3 cauda = normalize(posCometa - direcaoCometa * 0.14);\n"
         "  vec3 relativo = dir - cauda;\n"
         "  float aoLongo = clamp(dot(relativo, direcaoCometa), 0.0, 0.14);\n"
         "  float distanciaCauda = length(relativo - direcaoCometa * aoLongo);\n"
-        "  float brilhoCauda = smoothstep(0.018, 0.0, distanciaCauda) * (1.0 - aoLongo / 0.12);\n"
-        "  float brilhoNucleo = smoothstep(0.018, 0.0, length(dir - posCometa));\n"
+        "  float brilhoCauda = (1.0 - smoothstep(0.0, 0.018, distanciaCauda)) * (aoLongo / 0.14);\n"
+        "  float brilhoNucleo = 1.0 - smoothstep(0.0, 0.018, length(dir - posCometa));\n"
         "  cor += vec3(1.0, 0.78, 0.42) * (brilhoCauda * 0.55 + brilhoNucleo) * ativoCometa * noite;\n"
+        "  float tMeteoro = mod(u_animacao, 19.0);\n"
+        "  float ativoMeteoro = smoothstep(8.0, 8.2, tMeteoro) * (1.0 - smoothstep(9.7, 10.0, tMeteoro));\n"
+        "  float progressoMeteoro = clamp((tMeteoro - 8.0) / 2.0, 0.0, 1.0);\n"
+        "  vec3 meteoro = normalize(mix(vec3(-0.4, 0.85, -0.55), vec3(0.45, 0.35, -0.82), progressoMeteoro));\n"
+        "  vec3 rastroDir = normalize(vec3(0.85, -0.5, -0.27));\n"
+        "  vec3 rastroInicio = normalize(meteoro - rastroDir * 0.16);\n"
+        "  vec3 rastroRel = dir - rastroInicio;\n"
+        "  float rastroPos = clamp(dot(rastroRel, rastroDir), 0.0, 0.16);\n"
+        "  float rastro = (1.0 - smoothstep(0.003, 0.012, length(rastroRel - rastroDir * rastroPos))) * (rastroPos / 0.16);\n"
+        "  float nucleo = 1.0 - smoothstep(0.002, 0.012, length(dir - meteoro));\n"
+        "  cor += vec3(0.8, 0.9, 1.0) * (nucleo + rastro * 0.8) * ativoMeteoro * noite;\n"
         "  gl_FragColor = vec4(cor, 1.0);\n"
         "}\n";
     GLuint vs, fs;
@@ -827,6 +858,8 @@ static void inicializaShaderCeu(void)
         return;
     }
     shaderCeuTempo = glGetUniformLocation(shaderCeu, "u_tempo");
+    shaderCeuSeed = glGetUniformLocation(shaderCeu, "u_seed");
+    shaderCeuAnimacao = glGetUniformLocation(shaderCeu, "u_animacao");
     ceuDomo = gluNewQuadric();
     if (!ceuDomo) {
         glDeleteProgram(shaderCeu);
@@ -1499,7 +1532,7 @@ static float brilhoDaFaceAtual(int face)
     static const float normalX[6] = { 0, 0, 1, -1, 0, 0 };
     static const float normalY[6] = { 0, 0, 0, 0, 1, -1 };
     static const float normalZ[6] = { 1, -1, 0, 0, 0, 0 };
-    float angulo = tempoMundo * 2.0f * PI;
+    float angulo = (tempoMundo - 0.25f) * 2.0f * PI;
     float luzX = cosf(angulo);
     float luzY = sinf(angulo);
     float luzZ = 0.35f;
@@ -2958,10 +2991,11 @@ void atualiza(void)
         }
     }
 
+    tempoAnimacaoCeu += dt;
     tempoMundo += dt / DURACAO_DIA;
     while (tempoMundo >= 1.0f) tempoMundo -= 1.0f;
     while (tempoMundo < 0.0f) tempoMundo += 1.0f;
-    audioAtualizaNoite(sinf(tempoMundo * 2.0f * PI) < 0.0f);
+    audioAtualizaNoite(tempoMundo, DURACAO_DIA);
 
     float passo = VELOCIDADE * dt;
     float giro  = VELOCIDADE_GIRO * dt;
@@ -3919,7 +3953,7 @@ static void desenhaAstros(void)
         {0.27f, 0.58f}, {0.44f, 0.79f}, {0.58f, 0.61f}, {0.75f, 0.55f},
         {0.86f, 0.95f}, {0.05f, 0.56f}, {0.35f, 0.63f}, {0.68f, 0.97f}
     };
-    float angulo = tempoMundo * 2.0f * PI;
+    float angulo = (tempoMundo - 0.25f) * 2.0f * PI;
     float sunPixelX = larguraJanela * (0.5f + 0.48f * cosf(angulo));
     float sunPixelY = alturaJanela * (0.55f + 0.40f * sinf(angulo));
     float moonPixelX = larguraJanela * (0.5f - 0.48f * cosf(angulo));
@@ -4002,6 +4036,8 @@ static void desenhaCeuShader(void)
     glDisable(GL_CULL_FACE);
     glUseProgram(shaderCeu);
     glUniform1f(shaderCeuTempo, tempoMundo);
+    glUniform1f(shaderCeuSeed, (float)(sementeMundo % 4093u));
+    glUniform1f(shaderCeuAnimacao, tempoAnimacaoCeu);
     gluSphere(ceuDomo, 180.0, 64, 32);
     glUseProgram(0);
     glEnable(GL_CULL_FACE);
@@ -4203,7 +4239,7 @@ int quadros = 0;          /* quadros desenhados desde inicioContagem */
 
 static void atualizaCorCeu(void)
 {
-    float dia = sinf(tempoMundo * 2.0f * PI);
+    float dia = sinf((tempoMundo - 0.25f) * 2.0f * PI);
     float t;
     float noite[3] = { 0.025f, 0.045f, 0.12f };
     float claro[3] = { 0.53f, 0.81f, 0.92f };

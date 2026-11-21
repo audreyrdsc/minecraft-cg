@@ -12,7 +12,7 @@ void audioZumbiMorreu(void);
 void audioComer(void);
 void audioAtualizaPassos(float dt, int andando);
 void audioAtualizaAgua(int dentroDaAgua);
-void audioAtualizaNoite(int noite);
+void audioAtualizaNoite(float tempoMundo, float duracaoDia);
 void audioSpawnZumbi(void);
 
 #endif
